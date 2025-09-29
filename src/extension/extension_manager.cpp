@@ -97,9 +97,21 @@ void ExtensionManager::autoLoadLinkedExtensions(main::ClientContext* context) {
     trxContext->commit();
 }
 
+bool ExtensionManager::isStaticLinkedExtension(const std::string& extensionName) {
+    for (auto& loadedExtension : loadedExtensions) {
+        if (!common::StringUtils::caseInsensitiveEquals(loadedExtension.getExtensionName(),
+                extensionName)) {
+            continue;
+        }
+        if (loadedExtension.getSource() == ExtensionSource::STATIC_LINKED) {
+            return true;
+        }
+    }
+    return false;
+}
+
 ExtensionManager* ExtensionManager::Get(const main::ClientContext& context) {
     return context.getDatabase()->getExtensionManager();
-}
 
 } // namespace extension
 } // namespace lbug

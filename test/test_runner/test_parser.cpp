@@ -619,7 +619,76 @@ void TestParser::parseBody() {
             testGroup->testCases[testCaseName].push_back(std::move(loadExtensionStatement));
             testGroup->testCasesConnNames[testCaseName].insert(TestHelper::DEFAULT_CONN_NAME);
 #endif
-        } break;
+
+            break;
+        }
+        case TokenType::SKIP: {
+            testCaseName = "DISABLED_" + testCaseName;
+            break;
+        }
+        case TokenType::SKIP_MUSL: {
+#ifdef __MUSL__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::SKIP_32BIT: {
+#ifdef __32BIT__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::SKIP_WASM: {
+#ifdef __WASM__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::SKIP_STATIC_LINK: {
+#ifdef __STATIC_LINK_EXTENSION_TEST__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::SKIP_DYNAMIC_LINK: {
+#ifndef __STATIC_LINK_EXTENSION_TEST__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::WASM_ONLY: {
+#ifndef __WASM__
+            testCaseName = "DISABLED_" + testCaseName;
+#endif
+            break;
+        }
+        case TokenType::SKIP_VECTOR_CAPACITY_TESTS: {
+            if constexpr (VECTOR_CAPACITY_LOG_2 != STANDARD_VECTOR_CAPACITY_LOG_2) {
+                testCaseName = "DISABLED_" + testCaseName;
+            }
+            break;
+        }
+        case TokenType::SKIP_NODE_GROUP_SIZE_TESTS: {
+            if constexpr (StorageConfig::NODE_GROUP_SIZE_LOG2 != STANDARD_NODE_GROUP_SIZE_LOG_2) {
+                testCaseName = "DISABLED_" + testCaseName;
+            }
+            break;
+        }
+        case TokenType::SKIP_PAGE_SIZE_TESTS: {
+            if constexpr (PAGE_SIZE_LOG2 != STANDARD_PAGE_SIZE_LOG_2) {
+                testCaseName = "DISABLED_" + testCaseName;
+            }
+            break;
+        }
+        case TokenType::SKIP_IN_MEM: {
+            auto env = TestHelper::getSystemEnv("IN_MEM_MODE");
+            if (!env.empty()) {
+                if (env == "true") {
+                    testCaseName = "DISABLED_" + testCaseName;
+                }
+            }
+            break;
+        }
         case TokenType::TEST_FWD_ONLY_REL: {
             testFwdOnly = true;
         } break;
