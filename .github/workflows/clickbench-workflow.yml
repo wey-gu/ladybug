@@ -1,7 +1,7 @@
 name: ClickBench
 on:
-  schedule:
-    - cron: "0 5 * * *"
+  # schedule:  # Disabled for fork
+  #   - cron: "0 5 * * *"
 
   workflow_dispatch:
   workflow_call:

@@ -1,12 +1,12 @@
 name: CI Workflow
 
 on:
-  pull_request:
-    branches:
-      - master
-  push:
-    branches:
-      - master
+  # pull_request:  # Disabled for fork
+  #   branches:
+  #     - master
+  # push:  # Disabled for fork
+  #   branches:
+  #     - master
   workflow_dispatch:
     inputs:
       auto_checkpoint:

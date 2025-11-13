@@ -1,8 +1,8 @@
 name: LDBC SNB Business Intelligence Benchmark
 
 on:
-  schedule:
-    - cron: "0 5 * * *"
+  # schedule:  # Disabled for fork
+    #   - cron: "0 5 * * *"
 
   workflow_dispatch:
     inputs:

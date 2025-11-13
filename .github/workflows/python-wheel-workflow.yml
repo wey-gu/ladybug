@@ -80,7 +80,7 @@ jobs:
 
     env:
       CIBW_PLATFORM: ${{ matrix.os }}
-      CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+      CIBW_BUILD: "cp313-*"
 
       # Let CIBW detect the arch, except explicitly set Windows wheel arch per matrix
       CIBW_ARCHS: ${{ matrix.os == 'windows' && (matrix.platform == 'arm64' && 'ARM64' || 'AMD64') || 'auto' }}
