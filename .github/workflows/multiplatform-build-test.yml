@@ -7,8 +7,8 @@ env:
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 8 * * *"
+  # schedule:  # Disabled for fork
+  #   - cron: "0 8 * * *"
 
 jobs:
   # Generate the binary db once to test that it can be read on all platforms.
