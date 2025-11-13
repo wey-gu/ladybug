@@ -30,7 +30,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 2:
         file_name = sys.argv[1]
     else:
-        file_name = "real_ladybug-%s.tar.gz" % _get_lbug_version()
+        file_name = "f_real_ladybug-%s.tar.gz" % _get_lbug_version()
     print("Creating %s..." % file_name)
 
     with TemporaryDirectory() as tempdir:
@@ -57,7 +57,7 @@ if __name__ == "__main__":
         shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/examples"))
         shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/benchmark"))
         shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/logo"))
-        shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/extension"))
+        # shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/extension"))
         shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/test"))
         shutil.rmtree(os.path.join(tempdir, "real_ladybug-source/.github"))
 
@@ -82,8 +82,9 @@ if __name__ == "__main__":
                     f.write(line)
         shutil.copy2("README.md", os.path.join(tempdir, "README_PYTHON_BUILD.md"))
         subprocess.check_call([sys.executable, "setup.py", "egg_info"], cwd=tempdir)
+        # Package name is f-real_ladybug, so egg-info directory is f_real_ladybug.egg-info
         shutil.copy2(
-            os.path.join(tempdir, "real_ladybug.egg-info", "PKG-INFO"),
+            os.path.join(tempdir, "f_real_ladybug.egg-info", "PKG-INFO"),
             os.path.join(tempdir, "PKG-INFO"),
         )
         with tarfile.open(file_name, "w:gz") as sdist:

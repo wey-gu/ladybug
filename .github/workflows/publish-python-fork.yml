@@ -1,13 +1,18 @@
-name: Build Python Wheels
+name: Publish Python Fork to PyPI
 
 on:
+  release:
+    types: [created]
   workflow_dispatch:
-  workflow_call:
     inputs:
-      isNightly:
+      publish_to_pypi:
+        description: "Publish to PyPI (not just test PyPI)?"
         type: boolean
         required: true
         default: false
+
+env:
+  PIP_BREAK_SYSTEM_PACKAGES: 1
 
 jobs:
   package-python-sdist:
@@ -17,15 +22,6 @@ jobs:
 
       - name: Install uv
         run: pip3 install uv
-
-      - name: Update nightly version
-        if: ${{ inputs.isNightly == true }}
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv pip install packaging
-          python3 update-nightly-build-version.py
-        working-directory: scripts
 
       - name: Package Python sdist
         run: python package_tar.py
@@ -39,51 +35,41 @@ jobs:
 
   build-linux-wheels:
     needs: package-python-sdist
-    # The 'runs-on' key is now inside the matrix
     runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Job 1: Native x86_64 build
+          # Linux x86_64 build
           - platform: x86_64
-            runner: ubuntu-latest # This is the standard x86_64 runner
+            runner: ubuntu-latest
             os: linux
             manylinux: _2_28
-            deployment-target: ''
 
-          # Job 2: Native aarch64 build
+          # Linux aarch64 build
           - platform: aarch64
-            runner: ubuntu-22.04-arm # This is a native ARM64 runner
+            runner: ubuntu-22.04-arm
             os: linux
             manylinux: _2_28
-            deployment-target: ''
 
-          # Job 3: macOS arm64 build
+          # macOS arm64 build
           - platform: arm64
             runner: macos-latest
             os: macos
             deployment-target: '11.0'
 
-          # Job 4: Windows amd64 build
+          # Windows amd64 build
           - platform: amd64
             runner: windows-2022
             os: windows
-            deployment-target: ''
 
     env:
       CIBW_PLATFORM: ${{ matrix.os }}
       CIBW_BUILD: "cp313-*"
-
-      # Let CIBW detect the arch from the runner
       CIBW_ARCHS: ${{ matrix.os == 'windows' && 'AMD64' || 'auto' }}
-
-      # Set the manylinux image based on the detected arch (Linux only)
       CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.os == 'linux' && format('manylinux{0}', matrix.manylinux) || '' }}
       CIBW_MANYLINUX_AARCH64_IMAGE: ${{ matrix.os == 'linux' && format('manylinux{0}', matrix.manylinux) || '' }}
-
-      # Set deployment target for macOS, and Windows MSVC setup
       CIBW_ENVIRONMENT_WINDOWS: DISTUTILS_USE_SDK=1 MSSdk=1
       CIBW_ENVIRONMENT_MACOS: ${{ matrix.os == 'macos' && format('MACOSX_DEPLOYMENT_TARGET={0}', matrix.deployment-target) || '' }}
 
@@ -112,24 +98,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install uv
         run: python -m pip install uv
-
-      - name: Update nightly version
-        if: ${{ inputs.isNightly == true }}
-        shell: bash
-        run: |
-          uv venv
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            source .venv/Scripts/activate
-          else
-            source .venv/bin/activate
-          fi
-          uv pip install packaging
-          python update-nightly-build-version.py
-        working-directory: scripts
 
       - name: Install cibuildwheel
         if: matrix.os != 'windows'
@@ -159,3 +131,50 @@ jobs:
         with:
           name: ${{ matrix.os == 'linux' && format('manylinux{0}', matrix.manylinux) || matrix.os }}-wheels-${{ matrix.platform }}
           path: ./scripts/pip-package/wheelhouse/*.whl
+
+  deploy-python:
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+    needs: build-linux-wheels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-wheels-arm64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: manylinux_2_28-wheels-x86_64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: manylinux_2_28-wheels-aarch64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-wheels-amd64
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-sdist
+          path: dist
+
+      - name: List wheels
+        run: ls -l dist/
+
+      - name: Deploy to Test PyPI
+        if: ${{ github.event_name != 'release' && github.event.inputs.publish_to_pypi != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Deploy to PyPI
+        if: ${{ github.event_name == 'release' || github.event.inputs.publish_to_pypi == 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+

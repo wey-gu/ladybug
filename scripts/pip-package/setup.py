@@ -108,7 +108,7 @@ class BuildExtFirst(_build_py):
         return super().run()
 
 
-setup(name='real_ladybug',
+setup(name='f-real_ladybug',
       version=lbug_version,
       install_requires=[],
       ext_modules=[CMakeExtension(
