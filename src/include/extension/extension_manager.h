@@ -38,7 +38,7 @@ public:
 
     void autoLoadLinkedExtensions(main::ClientContext* context);
 
-    bool isStaticLinkedExtension(const std::string& extensionName);
+    bool isStaticLinkedExtension(const std::string& extensionName, main::ClientContext* context = nullptr);
 
     LBUG_API static ExtensionManager* Get(const main::ClientContext& context);
 

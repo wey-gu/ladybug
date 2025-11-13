@@ -4,6 +4,7 @@
 #include "common/string_utils.h"
 #include "extension/extension.h"
 #include "generated_extension_loader.h"
+#include "main/database.h"
 #include "storage/wal/local_wal.h"
 #include "transaction/transaction_context.h"
 
@@ -97,7 +98,8 @@ void ExtensionManager::autoLoadLinkedExtensions(main::ClientContext* context) {
     trxContext->commit();
 }
 
-bool ExtensionManager::isStaticLinkedExtension(const std::string& extensionName) {
+bool ExtensionManager::isStaticLinkedExtension(const std::string& extensionName, main::ClientContext* context) {
+    // First check if already loaded as statically linked
     for (auto& loadedExtension : loadedExtensions) {
         if (!common::StringUtils::caseInsensitiveEquals(loadedExtension.getExtensionName(),
                 extensionName)) {
@@ -107,11 +109,39 @@ bool ExtensionManager::isStaticLinkedExtension(const std::string& extensionName)
             return true;
         }
     }
+    
+    // If not found and context is provided, try to load statically linked extensions
+    // and check again. This handles the case where statically linked extensions
+    // haven't been auto-loaded yet.
+    if (context != nullptr) {
+        // Check if any statically linked extensions are already loaded to avoid duplicate loading
+        bool hasStaticLinkedExtensions = std::any_of(loadedExtensions.begin(), loadedExtensions.end(),
+            [](const LoadedExtension& ext) { return ext.getSource() == ExtensionSource::STATIC_LINKED; });
+        
+        // Only load statically linked extensions if none are loaded yet
+        // (they're all loaded together, so if any are loaded, all should be)
+        if (!hasStaticLinkedExtensions) {
+            loadLinkedExtensions(context, loadedExtensions);
+        }
+        
+        // Check again after loading
+        for (auto& loadedExtension : loadedExtensions) {
+            if (!common::StringUtils::caseInsensitiveEquals(loadedExtension.getExtensionName(),
+                    extensionName)) {
+                continue;
+            }
+            if (loadedExtension.getSource() == ExtensionSource::STATIC_LINKED) {
+                return true;
+            }
+        }
+    }
+    
     return false;
 }
 
 ExtensionManager* ExtensionManager::Get(const main::ClientContext& context) {
     return context.getDatabase()->getExtensionManager();
+}
 
 } // namespace extension
 } // namespace lbug

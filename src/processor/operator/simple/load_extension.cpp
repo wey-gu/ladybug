@@ -2,6 +2,7 @@
 
 #include "extension/extension_manager.h"
 #include "main/client_context.h"
+#include "main/database.h"
 #include "processor/execution_context.h"
 #include "storage/buffer_manager/memory_manager.h"
 
@@ -18,10 +19,11 @@ std::string LoadExtensionPrintInfo::toString() const {
 
 void LoadExtension::executeInternal(ExecutionContext* context) {
     auto clientContext = context->clientContext;
+    auto extensionManager = extension::ExtensionManager::Get(*clientContext);
     if (ExtensionUtils::isOfficialExtension(path) &&
-        clientContext->getExtensionManager()->isStaticLinkedExtension(path)) {
+        extensionManager->isStaticLinkedExtension(path, clientContext)) {
         appendMessage(stringFormat("Extension {} is already static linked with kuzu core.", path),
-            context->clientContext->getMemoryManager());
+            context->clientContext->getDatabase()->getMemoryManager());
         return;
     }
     ExtensionManager::Get(*clientContext)->loadExtension(path, clientContext);

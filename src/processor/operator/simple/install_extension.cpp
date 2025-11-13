@@ -2,6 +2,8 @@
 
 #include "common/string_format.h"
 #include "extension/extension_manager.h"
+#include "main/client_context.h"
+#include "main/database.h"
 #include "processor/execution_context.h"
 #include "storage/buffer_manager/memory_manager.h"
 
@@ -32,10 +34,11 @@ void InstallExtension::setOutputMessage(bool installed, storage::MemoryManager* 
 }
 
 void InstallExtension::executeInternal(ExecutionContext* context) {
-    if (context->clientContext->getExtensionManager()->isStaticLinkedExtension(info.name)) {
+    auto extensionManager = context->clientContext->getDatabase()->getExtensionManager();
+    if (extensionManager->isStaticLinkedExtension(info.name, context->clientContext)) {
         appendMessage(
             stringFormat("Extension {} is already static linked with kuzu core.", info.name),
-            context->clientContext->getMemoryManager());
+            context->clientContext->getDatabase()->getMemoryManager());
         return;
     }
     auto clientContext = context->clientContext;
