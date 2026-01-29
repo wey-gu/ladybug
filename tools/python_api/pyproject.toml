@@ -1,16 +1,16 @@
 [project]
 name = "f-real_ladybug"
-description = "Highly scalable, extremely fast, easy-to-use embeddable graph database"
+description = "Wey's Fork of ladybug"
 readme = "README.md"
 license = { text = "MIT" }
 keywords = ["graph", "database"]
 version = "0.0.1"
 
 [project.urls]
-Homepage = "https://ladybugdb.com/"
+Homepage = "https://github.com/wey-gu/ladybug"
 Documentation = "https://docs.ladybugdb.com/"
-Repository = "https://github.com/lbugdb/lbug"
-Changelog = "https://github.com/LadybugDB/ladybug/releases"
+Repository = "https://github.com/wey-gu/ladybug"
+Changelog = "https://github.com/wey-gu/ladybug/releases"
 
 [project.optional-dependencies]
 dev = [
