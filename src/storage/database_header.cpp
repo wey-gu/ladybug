@@ -14,13 +14,20 @@
 #include <format>
 
 namespace lbug::storage {
+static bool isBackwardCompatibleStorageVersion(
+    storage_version_t savedStorageVersion, storage_version_t currentStorageVersion) {
+    // 39 -> 40 is header-gated compatibility in our downstream lineage.
+    return currentStorageVersion == 40 && savedStorageVersion == 39;
+}
+
 static void validateStorageVersion(common::Deserializer& deSer) {
     std::string key;
     deSer.validateDebuggingInfo(key, "storage_version");
     storage_version_t savedStorageVersion = 0;
     deSer.deserializeValue(savedStorageVersion);
     const auto storageVersion = StorageVersionInfo::getStorageVersion();
-    if (savedStorageVersion != storageVersion) {
+    if (savedStorageVersion != storageVersion &&
+        !isBackwardCompatibleStorageVersion(savedStorageVersion, storageVersion)) {
         // TODO(Guodong): Add a test case for this.
         throw common::RuntimeException(
             std::format("Trying to read a database file with a different version. "
@@ -33,11 +40,17 @@ static void validateMagicBytes(common::Deserializer& deSer) {
     std::string key;
     deSer.validateDebuggingInfo(key, "magic");
     const auto numMagicBytes = strlen(StorageVersionInfo::MAGIC_BYTES);
-    uint8_t magicBytes[4];
+    uint8_t magicBytes[4] = {0};
     for (auto i = 0u; i < numMagicBytes; i++) {
         deSer.deserializeValue<uint8_t>(magicBytes[i]);
     }
-    if (memcmp(magicBytes, StorageVersionInfo::MAGIC_BYTES, numMagicBytes) != 0) {
+    const auto isCurrentMagic =
+        memcmp(magicBytes, StorageVersionInfo::MAGIC_BYTES, numMagicBytes) == 0;
+    // Legacy Kuzu lineage database files may still carry KUZU magic bytes.
+    static constexpr char LEGACY_KUZU_MAGIC_BYTES[] = "KUZU";
+    const auto isLegacyKuzuMagic =
+        memcmp(magicBytes, LEGACY_KUZU_MAGIC_BYTES, numMagicBytes) == 0;
+    if (!isCurrentMagic && !isLegacyKuzuMagic) {
         throw common::RuntimeException(
             "Unable to open database. The file is not a valid Lbug database file!");
     }
