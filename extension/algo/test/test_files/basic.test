@@ -32,7 +32,7 @@ Catalog exception: function weakly_connected_components is not defined. This fun
 -SKIP_DYNAMIC_LINK
 -STATEMENT INSTALL algo
 ---- 1
-Extension algo is already static linked with kuzu core.
+Extension algo is already static linked with ladybug core.
 -STATEMENT load algo
 ---- 1
-Extension algo is already static linked with kuzu core.
+Extension algo is already static linked with ladybug core.

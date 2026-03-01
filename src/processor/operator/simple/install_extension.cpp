@@ -1,6 +1,5 @@
 #include "processor/operator/simple/install_extension.h"
 
-#include "common/string_format.h"
 #include "extension/extension_manager.h"
 #include "main/client_context.h"
 #include "main/database.h"
@@ -37,7 +36,7 @@ void InstallExtension::executeInternal(ExecutionContext* context) {
     auto extensionManager = context->clientContext->getDatabase()->getExtensionManager();
     if (extensionManager->isStaticLinkedExtension(info.name, context->clientContext)) {
         appendMessage(
-            stringFormat("Extension {} is already static linked with kuzu core.", info.name),
+            std::format("Extension {} is already static linked with ladybug core.", info.name),
             context->clientContext->getDatabase()->getMemoryManager());
         return;
     }

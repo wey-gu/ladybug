@@ -359,7 +359,7 @@ Documents|documents_index|FTS|[text]|True|CALL CREATE_FTS_INDEX('Documents', 'do
 -SKIP_DYNAMIC_LINK
 -STATEMENT INSTALL fts
 ---- 1
-Extension fts is already static linked with kuzu core.
+Extension fts is already static linked with ladybug core.
 -STATEMENT load fts
 ---- 1
-Extension fts is already static linked with kuzu core.
+Extension fts is already static linked with ladybug core.

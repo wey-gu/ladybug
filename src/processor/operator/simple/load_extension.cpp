@@ -23,7 +23,7 @@ void LoadExtension::executeInternal(ExecutionContext* context) {
     auto extensionManager = extension::ExtensionManager::Get(*clientContext);
     if (ExtensionUtils::isOfficialExtension(path) &&
         extensionManager->isStaticLinkedExtension(path, clientContext)) {
-        appendMessage(stringFormat("Extension {} is already static linked with kuzu core.", path),
+        appendMessage(std::format("Extension {} is already static linked with ladybug core.", path),
             context->clientContext->getDatabase()->getMemoryManager());
         return;
     }
