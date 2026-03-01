@@ -121,9 +121,7 @@ jobs:
         if: matrix.os != 'windows'
         shell: bash
         run: |
-          uv venv
           source .venv/bin/activate
-          uv pip install cibuildwheel
           python -m cibuildwheel --output-dir scripts/pip-package/wheelhouse ${{ env.SDIST_FILE }}
 
       - name: Upload wheels
@@ -177,4 +175,3 @@ jobs:
       - name: Deploy to PyPI
         if: ${{ github.event_name == 'release' || github.event.inputs.publish_to_pypi == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
-
