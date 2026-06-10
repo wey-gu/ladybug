@@ -55,6 +55,26 @@ fn link_libraries() {
             "lz4",
             "roaring_bitmap",
             "simsimd",
+            "yyjson",
+        ] {
+            if rustversion::cfg!(since(1.82)) {
+                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+            } else {
+                println!("cargo:rustc-link-lib=static={lib}");
+            }
+        }
+
+        // Our fork statically links builtin extensions (extension_config.cmake
+        // EXTENSION_STATIC_LINK_LIST): the generated_extension_loader in
+        // liblbug references their load() symbols, so the archives must be on
+        // the link line too (they are staged into OUT_DIR/builtin_extensions
+        // by build_bundled_cmake).
+        for lib in [
+            "lbug_fts_static_extension",
+            "lbug_algo_static_extension",
+            "lbug_json_static_extension",
+            "lbug_vector_static_extension",
+            "snowball",
         ] {
             if rustversion::cfg!(since(1.82)) {
                 println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
@@ -97,6 +117,41 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
     let lbug_lib_path = build_dir.join("build").join("src");
     println!("cargo:rustc-link-search=native={}", lbug_lib_path.display());
 
+    // Stage the statically-linked builtin extension archives (our fork's
+    // extension_config.cmake builds them as lib<name>_static.lbug_extension
+    // under <source>/extension/<name>/build) into OUT_DIR with standard
+    // lib*.a names so rustc-link-lib can find them.
+    let ext_lib_dir = build_dir.join("builtin_extensions");
+    std::fs::create_dir_all(&ext_lib_dir).expect("create builtin_extensions dir");
+    for ext in ["fts", "algo", "json", "vector"] {
+        let src = lbug_root
+            .join("extension")
+            .join(ext)
+            .join("build")
+            .join(format!("lib{ext}_static.lbug_extension"));
+        let dst = ext_lib_dir.join(format!("liblbug_{ext}_static_extension.a"));
+        if src.exists() {
+            std::fs::copy(&src, &dst)
+                .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", src.display(), dst.display()));
+        } else {
+            panic!(
+                "builtin extension archive missing: {} (the fork links {ext} statically; \
+                 did the cmake build produce it?)",
+                src.display()
+            );
+        }
+    }
+    println!("cargo:rustc-link-search=native={}", ext_lib_dir.display());
+
+    // fts depends on the bundled snowball stemmer (built out-of-source).
+    let snowball_dir = build_dir
+        .join("build")
+        .join("extension")
+        .join("fts")
+        .join("third_party")
+        .join("snowball");
+    println!("cargo:rustc-link-search=native={}", snowball_dir.display());
+
     for dir in [
         "utf8proc",
         "antlr4_cypher",
@@ -114,6 +169,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         "lz4",
         "roaring_bitmap",
         "simsimd",
+        "yyjson",
     ] {
         let lib_path = build_dir
             .join("build")
