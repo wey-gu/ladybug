@@ -226,6 +226,11 @@ fn build_ffi(
     // Unfortunately they appear to need to be specified individually since the symlink is
     // considered to be changed each time.
     println!("cargo:rerun-if-changed=lbug-src/src");
+    // The builtin extensions (fts/algo/json/vector) are statically linked into this
+    // crate, so an edit under extension/ changes the shipped binary. Without this
+    // line cargo reports the crate Fresh and silently keeps the stale archive, which
+    // is invisible: the build is green and the fix is simply not in the artifact.
+    println!("cargo:rerun-if-changed=lbug-src/extension");
     println!("cargo:rerun-if-changed=lbug-src/cmake");
     println!("cargo:rerun-if-changed=lbug-src/third_party");
     println!("cargo:rerun-if-changed=lbug-src/CMakeLists.txt");
