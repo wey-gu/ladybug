@@ -24,6 +24,33 @@ Learning Machines
 The Quantum World
 Learning Machines
 
+-CASE CreateEmptyFTSReload
+-SKIP_IN_MEM
+-LOAD_DYNAMIC_EXTENSION fts
+-STATEMENT CREATE NODE TABLE EmptyDoc (id STRING PRIMARY KEY, content STRING);
+---- ok
+-STATEMENT CALL CREATE_FTS_INDEX('EmptyDoc', 'empty_doc_index', ['content']);
+---- ok
+-STATEMENT CHECKPOINT;
+---- ok
+-RELOADDB
+-LOAD_DYNAMIC_EXTENSION fts
+-STATEMENT MATCH (d:EmptyDoc) RETURN count(d);
+---- 1
+0
+-STATEMENT CREATE (:EmptyDoc {id: 'doc-1', content: 'reopen remains writable'});
+---- ok
+-STATEMENT CALL QUERY_FTS_INDEX('EmptyDoc', 'empty_doc_index', 'writable') RETURN node.id;
+---- 1
+doc-1
+-STATEMENT CHECKPOINT;
+---- ok
+-RELOADDB
+-LOAD_DYNAMIC_EXTENSION fts
+-STATEMENT CALL QUERY_FTS_INDEX('EmptyDoc', 'empty_doc_index', 'writable') RETURN node.id;
+---- 1
+doc-1
+
 -CASE CreateFTSComit
 -LOAD_DYNAMIC_EXTENSION fts
 -STATEMENT BEGIN TRANSACTION;
