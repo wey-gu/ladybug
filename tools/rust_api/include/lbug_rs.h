@@ -142,6 +142,7 @@ const lbug::common::Value& rel_value_get_property_value(const lbug::common::Valu
 const lbug::common::Value& node_value_get_node_id(const lbug::common::Value& val);
 
 /* RelVal */
+const lbug::common::Value& rel_value_get_id(const lbug::common::Value& val);
 const lbug::common::Value& rel_value_get_src_id(const lbug::common::Value& val);
 std::array<uint64_t, 2> rel_value_get_dst_id(const lbug::common::Value& val);
 

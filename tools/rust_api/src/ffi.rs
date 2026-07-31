@@ -402,6 +402,7 @@ pub(crate) mod ffi {
 
         fn rel_value_get_label_name(value: &Value) -> String;
 
+        fn rel_value_get_id(value: &Value) -> &Value;
         fn rel_value_get_src_id(value: &Value) -> &Value;
         fn rel_value_get_dst_id(value: &Value) -> [u64; 2];
 
