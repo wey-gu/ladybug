@@ -108,6 +108,7 @@ impl std::fmt::Display for NodeVal {
 /// rel
 #[derive(Clone, Debug, PartialEq)]
 pub struct RelVal {
+    id: Option<InternalID>,
     src_node: InternalID,
     dst_node: InternalID,
     label: String,
@@ -117,11 +118,21 @@ pub struct RelVal {
 impl RelVal {
     pub fn new<I: Into<InternalID>, S: Into<String>>(src_node: I, dst_node: I, label: S) -> Self {
         RelVal {
+            id: None,
             src_node: src_node.into(),
             dst_node: dst_node.into(),
             label: label.into(),
             properties: vec![],
         }
+    }
+
+    pub fn with_id(mut self, id: impl Into<InternalID>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn get_rel_id(&self) -> Option<&InternalID> {
+        self.id.as_ref()
     }
 
     pub fn get_src_node(&self) -> &InternalID {
@@ -580,6 +591,15 @@ impl TryFrom<&ffi::Value> for Value {
                 Ok(Value::Node(node_val))
             }
             LogicalTypeID::REL => {
+                let id = ffi::rel_value_get_id(value);
+                if id.isNull() {
+                    return Ok(Value::Null(value.into()));
+                }
+                let id = ffi::value_get_internal_id(id);
+                let id = InternalID {
+                    offset: id[0],
+                    table_id: id[1],
+                };
                 let src_node = ffi::rel_value_get_src_id(value);
                 if (src_node).isNull() {
                     return Ok(Value::Null(value.into()));
@@ -596,7 +616,7 @@ impl TryFrom<&ffi::Value> for Value {
                     table_id: dst_node[1],
                 };
                 let label = ffi::rel_value_get_label_name(value);
-                let mut rel_val = RelVal::new(src_node, dst_node, label);
+                let mut rel_val = RelVal::new(src_node, dst_node, label).with_id(id);
                 for i in 0..ffi::rel_value_get_num_properties(value) {
                     rel_val.add_property(
                         ffi::rel_value_get_property_name(value, i),

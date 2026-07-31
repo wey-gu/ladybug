@@ -167,6 +167,9 @@ const Value& node_value_get_node_id(const lbug::common::Value& val) {
 const Value& rel_value_get_src_id(const lbug::common::Value& val) {
     return *lbug::common::RelVal::getSrcNodeIDVal(&val);
 }
+const Value& rel_value_get_id(const lbug::common::Value& val) {
+    return *lbug::common::RelVal::getIDVal(&val);
+}
 std::array<uint64_t, 2> rel_value_get_dst_id(const lbug::common::Value& val) {
     auto internalID =
         lbug::common::RelVal::getDstNodeIDVal(&val)->getValue<lbug::common::internalID_t>();
