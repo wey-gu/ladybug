@@ -28,14 +28,14 @@ include = [
 
 [dependencies]
 arrow = { version = "55", optional = true, default-features = false, features = ["ffi"] }
-cxx = "=1.0.138" # the last version that builds on clang 15
+cxx = "=1.0.198"
 rust_decimal = { version = "1.37", default-features = false }
 time = "0.3"
 uuid = "1.6"
 
 [build-dependencies]
 cmake = "0.1"
-cxx-build = "=1.0.138" # should match the `cxx` version
+cxx-build = "=1.0.198"
 rustversion = "1"
 
 [dev-dependencies]

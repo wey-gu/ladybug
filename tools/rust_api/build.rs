@@ -57,11 +57,11 @@ fn link_libraries() {
             "simsimd",
             "yyjson",
         ] {
-            if rustversion::cfg!(since(1.82)) {
-                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
-            } else {
-                println!("cargo:rustc-link-lib=static={lib}");
-            }
+            // These are implementation dependencies of liblbug. Pulling every
+            // object from each archive duplicates symbols supplied by host
+            // crates, notably simsimd. Only the database and its extensions
+            // need whole-archive semantics for registration symbols.
+            println!("cargo:rustc-link-lib=static={lib}");
         }
 
         // Our fork statically links builtin extensions (extension_config.cmake
