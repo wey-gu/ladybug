@@ -57,11 +57,31 @@ fn link_libraries() {
             "simsimd",
             "yyjson",
         ] {
-            // These are implementation dependencies of liblbug. Pulling every
-            // object from each archive duplicates symbols supplied by host
-            // crates, notably simsimd. Only the database and its extensions
-            // need whole-archive semantics for registration symbols.
-            println!("cargo:rustc-link-lib=static={lib}");
+            // WHOLE-ARCHIVE IS LOAD-BEARING HERE. These are implementation
+            // dependencies of liblbug AND of the builtin extension archives
+            // emitted further down. A plain `static=` archive is order
+            // sensitive: the linker only pulls the objects that resolve
+            // symbols already undefined at the moment it walks that archive.
+            // The extension archives come AFTER this list, so a plain
+            // libyyjson.a is walked and discarded before
+            // liblbug_json_static_extension.a asks for `yyjson_read_opts`.
+            //
+            // Narrowing these to `static=` (ladybug 9f90a2437) linked on
+            // x86_64 but broke the linux/arm64 docker image with undefined
+            // references to antlr4::*, miniz::mz_error, yyjson_read_opts and
+            // yyjson_locate_pos. It held 0.10.51 back.
+            //
+            // The narrowing was justified as avoiding duplicate symbols from
+            // host crates "notably simsimd", but there is no simsimd crate in
+            // nmem-rs's dependency graph: libsimsimd.a is built by ladybug's
+            // own third_party. If a real duplicate does appear, narrow that
+            // ONE archive and leave the rest whole, or wrap the group in
+            // -Wl,--start-group; do not narrow the list wholesale again.
+            if rustversion::cfg!(since(1.82)) {
+                println!("cargo:rustc-link-lib=static:+whole-archive={lib}");
+            } else {
+                println!("cargo:rustc-link-lib=static={lib}");
+            }
         }
 
         // Our fork statically links builtin extensions (extension_config.cmake
