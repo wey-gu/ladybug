@@ -38,6 +38,17 @@
 0|3|[0,1,2]
 3|4|[3,4,8,9]
 5|3|[5,6,7]
+-STATEMENT CALL LOUVAIN('Graph', resolution := 1.0) WITH louvain_id, min(node.id) as louvainId, count(*) as nodeCount, list_sort(collect(node.id)) as nodeIds RETURN louvainId, nodeCount, nodeIds ORDER BY louvainId;
+---- 3
+0|3|[0,1,2]
+3|4|[3,4,8,9]
+5|3|[5,6,7]
+-STATEMENT CALL LOUVAIN('Graph', resolution := 0.0) RETURN node.id, louvain_id;
+---- error
+Binder exception: resolution must be finite and greater than 0.
+-STATEMENT CALL LOUVAIN('Graph', resolution := CAST('NaN' AS DOUBLE)) RETURN node.id, louvain_id;
+---- error
+Binder exception: resolution must be finite and greater than 0.
 
 -CASE OnlyNodes
 -LOAD_DYNAMIC_EXTENSION algo

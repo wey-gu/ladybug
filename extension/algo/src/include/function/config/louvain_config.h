@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string>
 
 #include "common/exception/binder.h"
@@ -8,6 +9,21 @@
 
 namespace lbug {
 namespace function {
+
+// Generalized-modularity resolution parameter. Values above 1 prefer smaller
+// communities; values below 1 prefer larger communities. A default of 1 keeps
+// the historical Newman-Girvan modularity objective byte-compatible.
+struct Resolution {
+    static constexpr const char* NAME = "resolution";
+    static constexpr common::LogicalTypeID TYPE = common::LogicalTypeID::DOUBLE;
+    static constexpr double DEFAULT_VALUE = 1.0;
+
+    static void validate(double resolution) {
+        if (!std::isfinite(resolution) || resolution <= 0) {
+            throw common::BinderException{"resolution must be finite and greater than 0."};
+        }
+    }
+};
 
 // The maximum number of phases in which the graph is clustered and then aggregated.
 struct MaxPhases {
