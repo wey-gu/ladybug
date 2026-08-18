@@ -42,21 +42,24 @@ constexpr offset_t UNASSIGNED_COMM = numeric_limits<offset_t>::max();
 
 struct LouvainOptionalParams final : public MaxIterationOptionalParams {
     OptionalParam<MaxPhases> maxPhases;
+    OptionalParam<Resolution> resolution;
 
     explicit LouvainOptionalParams(const expression_vector& optionalParams);
 
     // For copy only
     LouvainOptionalParams(OptionalParam<MaxIterations> maxIterations,
-        OptionalParam<MaxPhases> maxPhases)
-        : MaxIterationOptionalParams{maxIterations}, maxPhases{std::move(maxPhases)} {}
+        OptionalParam<MaxPhases> maxPhases, OptionalParam<Resolution> resolution)
+        : MaxIterationOptionalParams{maxIterations}, maxPhases{std::move(maxPhases)},
+          resolution{std::move(resolution)} {}
 
     void evaluateParams(main::ClientContext* context) override {
         MaxIterationOptionalParams::evaluateParams(context);
         maxPhases.evaluateParam(context);
+        resolution.evaluateParam(context);
     }
 
     std::unique_ptr<function::OptionalParams> copy() override {
-        return std::make_unique<LouvainOptionalParams>(maxIterations, maxPhases);
+        return std::make_unique<LouvainOptionalParams>(maxIterations, maxPhases, resolution);
     }
 };
 
@@ -66,6 +69,8 @@ LouvainOptionalParams::LouvainOptionalParams(const expression_vector& optionalPa
         auto paramName = StringUtils::getLower(optionalParam->getAlias());
         if (paramName == MaxPhases::NAME) {
             maxPhases = function::OptionalParam<MaxPhases>(optionalParam);
+        } else if (paramName == Resolution::NAME) {
+            resolution = function::OptionalParam<Resolution>(optionalParam);
         } else if (paramName == MaxIterations::NAME) {
             continue;
         } else {
@@ -274,7 +279,7 @@ private:
 
 class RunIterationVC final : public InMemParallelCompute {
 public:
-    explicit RunIterationVC(PhaseState& state) : state{state} {}
+    RunIterationVC(PhaseState& state, double resolution) : state{state}, resolution{resolution} {}
     ~RunIterationVC() override = default;
 
     void parallelCompute(const offset_t startOffset, const offset_t endOffset,
@@ -380,7 +385,7 @@ public:
                 const auto changeSumWeightedDegrees = 2 * degree * state.modularityConstant *
                                                       (newWeightedDegrees - prevWeightedDegrees);
                 // Both sides multiplied by 2*m to reduce constants.
-                const auto modGain = changeIntraWeights - changeSumWeightedDegrees;
+                const auto modGain = changeIntraWeights - resolution * changeSumWeightedDegrees;
                 if (modGain > newCommModGain || ((newCommModGain - modGain) < THRESHOLD &&
                                                     modGain != 0 && (nbrCommId < newComm))) {
                     // Move if gain is higher, or gain is the same, but nbrComm has a lower ID.
@@ -398,11 +403,12 @@ public:
     }
 
     std::unique_ptr<InMemParallelCompute> copy() override {
-        return std::make_unique<RunIterationVC>(state);
+        return std::make_unique<RunIterationVC>(state, resolution);
     }
 
 private:
     PhaseState& state;
+    double resolution;
 };
 
 class ComputeModularityVC final : public InMemParallelCompute {
@@ -584,6 +590,7 @@ static common::offset_t tableFunc(const TableFuncInput& input, TableFuncOutput&)
 
     auto louvainBindData = input.bindData->constPtrCast<LouvainBindData>();
     auto& config = louvainBindData->optionalParams->constCast<LouvainOptionalParams>();
+    const auto resolution = config.resolution.getParamVal();
 
     auto progressBar = ProgressBar::Get(*clientContext);
     const auto steps = config.maxPhases.getParamVal() * config.maxIterations.getParamVal();
@@ -608,7 +615,7 @@ static common::offset_t tableFunc(const TableFuncInput& input, TableFuncOutput&)
             // For each node, try to find a neighbor community such that moving the node to that
             // community increases the graph modularity. Note that the new community assignments are
             // sensitive to the order in which the nodes are processed.
-            RunIterationVC runIteration(state);
+            RunIterationVC runIteration(state, resolution);
             InMemGDSUtils::runParallelCompute(runIteration, state.graph.numNodes, input.context);
 
             progressBar->updateProgress(input.context->queryID, progress * 0.5);
@@ -621,7 +628,8 @@ static common::offset_t tableFunc(const TableFuncInput& input, TableFuncOutput&)
             InMemGDSUtils::runParallelCompute(newModularityVC, state.graph.numNodes, input.context);
             const double currMod =
                 sumIntraWeights.load() * state.modularityConstant -
-                (sumWeightedDegrees.load() * state.modularityConstant * state.modularityConstant);
+                resolution * (sumWeightedDegrees.load() * state.modularityConstant *
+                                 state.modularityConstant);
 
             if (currMod - oldMod < THRESHOLD) {
                 // The community assignments in `currComm` don't increase the modularity. The
