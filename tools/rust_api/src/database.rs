@@ -314,6 +314,43 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_fts_index_reopens_and_remains_writable() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db_path = temp_dir.path().join("test");
+
+        {
+            let db = Database::new(&db_path, SYSTEM_CONFIG_FOR_TESTS)?;
+            let conn = Connection::new(&db)?;
+            conn.query("LOAD EXTENSION FTS")?;
+            conn.query("CREATE NODE TABLE EmptyDoc(id STRING PRIMARY KEY, content STRING)")?;
+            conn.query("CALL CREATE_FTS_INDEX('EmptyDoc', 'empty_doc_index', ['content'])")?;
+            conn.query("CHECKPOINT")?;
+        }
+
+        {
+            let db = Database::new(&db_path, SYSTEM_CONFIG_FOR_TESTS)?;
+            let conn = Connection::new(&db)?;
+            conn.query("LOAD EXTENSION FTS")?;
+            let mut result = conn.query("MATCH (d:EmptyDoc) RETURN count(d)")?;
+            assert_eq!(result.next().unwrap()[0], Value::Int64(0));
+            conn.query("CREATE (:EmptyDoc {id: 'doc-1', content: 'reopen remains writable'})")?;
+            conn.query("CHECKPOINT")?;
+        }
+
+        {
+            let db = Database::new(&db_path, SYSTEM_CONFIG_FOR_TESTS)?;
+            let conn = Connection::new(&db)?;
+            let mut result = conn.query("MATCH (d:EmptyDoc) RETURN d.id")?;
+            assert_eq!(
+                result.next().unwrap()[0],
+                Value::String("doc-1".to_string())
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn test_database_in_memory() -> Result<()> {
         use crate::Value;
         let db = Database::in_memory(SYSTEM_CONFIG_FOR_TESTS)?;
