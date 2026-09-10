@@ -226,6 +226,73 @@ mod tests {
     }
 
     #[test]
+    fn test_checkpoint_deleted_insertions_preserves_csr_scans() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let path = temp_dir.path().join("test");
+        let config = SYSTEM_CONFIG_FOR_TESTS.auto_checkpoint(false);
+        let assert_edges = |conn: &Connection, expected: &[Vec<Value>]| -> Result<()> {
+            for query in [
+                "MATCH (a:Node)-[r:Link]->(b:Node) RETURN a.id, b.id, r.value ORDER BY a.id",
+                "MATCH (b:Node)<-[r:Link]-(a:Node) RETURN a.id, b.id, r.value ORDER BY a.id",
+            ] {
+                assert_eq!(conn.query(query)?.collect::<Vec<_>>(), expected);
+            }
+            Ok(())
+        };
+        {
+            let db = Database::new(&path, config.clone())?;
+            let conn = Connection::new(&db)?;
+            conn.query("CREATE NODE TABLE Node(id INT64 PRIMARY KEY)")?;
+            conn.query("CREATE REL TABLE Link(FROM Node TO Node, value INT64)")?;
+            conn.query("UNWIND range(0, 5) AS id CREATE (:Node {id: id})")?;
+            conn.query(
+                "MATCH (a:Node {id:0}), (b:Node {id:1}) CREATE (a)-[:Link {value:10}]->(b)",
+            )?;
+            conn.query("CHECKPOINT")?;
+            let original = [vec![Value::Int64(0), Value::Int64(1), Value::Int64(10)]];
+            for _ in 0..2 {
+                conn.query(
+                    "MATCH (a:Node {id:2}), (b:Node {id:3}) CREATE (a)-[:Link {value:20}]->(b)",
+                )?;
+                conn.query("MATCH (:Node {id:2})-[r:Link]->(:Node {id:3}) DELETE r")?;
+                conn.query("CHECKPOINT")?;
+                assert_edges(&conn, &original)?;
+                for query in [
+                    "MATCH (:Node {id:2})-[:Link]->(n:Node) RETURN n.id",
+                    "MATCH (:Node {id:3})<-[:Link]-(n:Node) RETURN n.id",
+                ] {
+                    assert!(conn.query(query)?.next().is_none());
+                }
+                conn.query("CHECKPOINT")?;
+                assert_edges(&conn, &original)?;
+            }
+            // Both persistent updates and new insertions must still survive the cleanup.
+            conn.query("MATCH (:Node {id:0})-[r:Link]->(:Node {id:1}) SET r.value=11")?;
+            conn.query(
+                "MATCH (a:Node {id:4}), (b:Node {id:5}) CREATE (a)-[:Link {value:30}]->(b)",
+            )?;
+            conn.query("CHECKPOINT")?;
+            assert_edges(
+                &conn,
+                &[
+                    vec![Value::Int64(0), Value::Int64(1), Value::Int64(11)],
+                    vec![Value::Int64(4), Value::Int64(5), Value::Int64(30)],
+                ],
+            )?;
+        }
+        let db = Database::new(&path, config)?;
+        let conn = Connection::new(&db)?;
+        assert_edges(
+            &conn,
+            &[
+                vec![Value::Int64(0), Value::Int64(1), Value::Int64(11)],
+                vec![Value::Int64(4), Value::Int64(5), Value::Int64(30)],
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn test_invalid_query() -> Result<()> {
         let temp_dir = tempfile::tempdir()?;
         let db = Database::new(temp_dir.path().join("test"), SYSTEM_CONFIG_FOR_TESTS)?;

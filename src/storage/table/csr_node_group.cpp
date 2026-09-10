@@ -515,6 +515,9 @@ void CSRNodeGroup::checkpointInMemAndOnDisk(const UniqLock& lock, NodeGroupCheck
             persistentChunkGroup = createNewPersistentChunkGroup(
                 persistentChunkGroup->cast<ChunkedCSRNodeGroup>(), csrState);
         }
+        // Insertions deleted before checkpoint leave invalid rows in the in-memory
+        // CSR index even when no persistent region needs rewriting.
+        finalizeCheckpoint(lock);
         return;
     }
     if (regionsToCheckpoint.size() == 1 &&
