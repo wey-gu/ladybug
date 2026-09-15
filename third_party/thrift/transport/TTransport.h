@@ -22,6 +22,7 @@
 
 #include "Thrift.h"
 #include "transport/TTransportException.h"
+#include <cstdint>
 #include <memory>
 #include <string>
 
