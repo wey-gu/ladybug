@@ -7,3 +7,8 @@ add_lbug_test(rel_tests rel_scan_test.cpp rel_delete_test.cpp)
 add_lbug_test(node_update_test node_update_test.cpp)
 
 target_include_directories(compression_test PRIVATE ${PROJECT_SOURCE_DIR}/third_party/alp/include)
+
+add_executable(string_chunk_scan_test string_chunk_scan_test.cpp)
+target_link_libraries(string_chunk_scan_test PRIVATE GTEST_LIB lbug)
+include(GoogleTest)
+gtest_discover_tests(string_chunk_scan_test DISCOVERY_TIMEOUT 600 DISCOVERY_MODE PRE_TEST)
