@@ -129,6 +129,7 @@ void ShadowFile::replayShadowPageRecords(ClientContext& context) {
             record.originalPageIdx * LBUG_PAGE_SIZE);
         shadowPageIdx++;
     }
+    StorageManager::Get(context)->getDataFH()->refreshPageCountFromFile();
 }
 
 void ShadowFile::flushAll(main::ClientContext& context) const {

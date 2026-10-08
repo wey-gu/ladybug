@@ -1,7 +1,9 @@
 #include "storage/file_handle.h"
 
 #include <cmath>
+#include <limits>
 
+#include "common/exception/io.h"
 #include "common/file_system/virtual_file_system.h"
 #include "storage/buffer_manager/buffer_manager.h"
 
@@ -53,6 +55,24 @@ void FileHandle::constructTmpFileHandle(const std::string& path) {
     fileInfo = std::make_unique<FileInfo>(path, nullptr);
     numPages = 0;
     pageCapacity = 0;
+}
+
+void FileHandle::refreshPageCountFromFile() {
+    std::unique_lock lck{fhSharedMutex};
+    const auto fileLength = fileInfo->getFileSize();
+    const auto pageSize = getPageSize();
+    const auto pagesOnDisk = fileLength / pageSize + (fileLength % pageSize != 0);
+    constexpr auto maxPageCapacity =
+        (std::numeric_limits<uint32_t>::max() / StorageConstants::PAGE_GROUP_SIZE) *
+        StorageConstants::PAGE_GROUP_SIZE;
+    if (pagesOnDisk > maxPageCapacity) {
+        throw IOException("Database file page count exceeds FileHandle capacity.");
+    }
+    // Shadow recovery can extend the physical file after this handle was locked.
+    // Grow its state/frame groups without reopening the inode or shrinking live reservations.
+    while (numPages < pagesOnDisk) {
+        addNewPageWithoutLock();
+    }
 }
 
 page_idx_t FileHandle::addNewPage() {

@@ -1,5 +1,7 @@
 #include "storage/disk_array.h"
 
+#include <unordered_set>
+
 #include "common/exception/runtime.h"
 #include "common/string_format.h"
 #include "common/types/types.h"
@@ -33,6 +35,11 @@ PageStorageInfo::PageStorageInfo(uint64_t elementSize)
 
 PIPWrapper::PIPWrapper(const FileHandle& fileHandle, page_idx_t pipPageIdx)
     : pipPageIdx(pipPageIdx) {
+    if (pipPageIdx >= fileHandle.getNumPages()) {
+        throw RuntimeException(
+            stringFormat("Cannot read PIP page {}: out of bounds for file with {} pages.",
+                pipPageIdx, fileHandle.getNumPages()));
+    }
     fileHandle.readPageFromDisk(reinterpret_cast<uint8_t*>(&pipContents), pipPageIdx);
 }
 
@@ -44,14 +51,42 @@ DiskArrayInternal::DiskArrayInternal(FileHandle& fileHandle,
       lastAPPageIdx{INVALID_PAGE_IDX}, lastPageOnDisk{INVALID_PAGE_IDX} {
     if (this->header.firstPIPPageIdx != ShadowUtils::NULL_PAGE_IDX) {
         pips.emplace_back(fileHandle, header.firstPIPPageIdx);
+        std::unordered_set<page_idx_t> visitedPIPPages{header.firstPIPPageIdx};
         while (pips[pips.size() - 1].pipContents.nextPipPageIdx != ShadowUtils::NULL_PAGE_IDX) {
-            pips.emplace_back(fileHandle, pips[pips.size() - 1].pipContents.nextPipPageIdx);
+            const auto nextPipPageIdx = pips.back().pipContents.nextPipPageIdx;
+            if (!visitedPIPPages.insert(nextPipPageIdx).second) {
+                throw RuntimeException(stringFormat(
+                    "Cannot read PIP page {}: the PIP chain contains a cycle.", nextPipPageIdx));
+            }
+            pips.emplace_back(fileHandle, nextPipPageIdx);
         }
     }
+    validateArrayPageIdxs();
     // If bypassing the WAL is disabled, just leave the lastPageOnDisk as invalid, as then all pages
     // will be treated as updates to existing ones
     if (bypassShadowing) {
         updateLastPageOnDisk();
+    }
+}
+
+// Validate lazy buffer-manager reads once, before any persisted array page can be accessed.
+void DiskArrayInternal::validateArrayPageIdxs() const {
+    const auto numAPs = getNumAPs(header);
+    if (numAPs > pips.size() * NUM_PAGE_IDXS_PER_PIP) {
+        throw RuntimeException(stringFormat(
+            "Cannot load disk array: {} elements require {} array pages, but its PIPs address "
+            "at most {}.",
+            header.numElements, numAPs, pips.size() * NUM_PAGE_IDXS_PER_PIP));
+    }
+    for (uint64_t apIdx = 0; apIdx < numAPs; ++apIdx) {
+        const auto pageIdx =
+            pips[apIdx / NUM_PAGE_IDXS_PER_PIP].pipContents.pageIdxs[apIdx % NUM_PAGE_IDXS_PER_PIP];
+        if (pageIdx >= fileHandle.getNumPages()) {
+            throw RuntimeException(stringFormat(
+                "Cannot load disk array: array page {} references page {}, outside file with {} "
+                "pages.",
+                apIdx, pageIdx, fileHandle.getNumPages()));
+        }
     }
 }
 
@@ -85,7 +120,7 @@ bool DiskArrayInternal::checkOutOfBoundAccess(TransactionType trxType, uint64_t 
 void DiskArrayInternal::get(uint64_t idx, const Transaction* transaction,
     std::span<std::byte> val) {
     std::shared_lock sLck{diskArraySharedMtx};
-    KU_ASSERT(checkOutOfBoundAccess(transaction->getType(), idx));
+    checkOutOfBoundAccess(transaction->getType(), idx);
     auto apCursor = getAPIdxAndOffsetInAP(storageInfo, idx);
     page_idx_t apPageIdx = getAPPageIdxNoLock(apCursor.pageIdx, transaction->getType());
     if (transaction->getType() != TransactionType::CHECKPOINT || !hasTransactionalUpdates ||
@@ -123,8 +158,8 @@ void DiskArrayInternal::updatePage(uint64_t pageIdx, bool isNewPage,
 void DiskArrayInternal::update(const Transaction* transaction, uint64_t idx,
     std::span<std::byte> val) {
     std::unique_lock xLck{diskArraySharedMtx};
+    checkOutOfBoundAccess(transaction->getType(), idx);
     hasTransactionalUpdates = true;
-    KU_ASSERT(checkOutOfBoundAccess(transaction->getType(), idx));
     auto apCursor = getAPIdxAndOffsetInAP(storageInfo, idx);
     // TODO: We are currently supporting only DiskArrays that can grow in size and not
     // those that can shrink in size. That is why we can use
@@ -309,7 +344,7 @@ DiskArrayInternal::getAPPageIdxAndAddAPToPIPIfNecessaryForWriteTrxNoLock(
 }
 
 DiskArrayInternal::WriteIterator& DiskArrayInternal::WriteIterator::seek(size_t newIdx) {
-    KU_ASSERT(newIdx < diskArray.headerForWriteTrx.numElements);
+    diskArray.checkOutOfBoundAccess(TRX_TYPE, newIdx);
     auto oldPageIdx = apCursor.pageIdx;
     idx = newIdx;
     apCursor = getAPIdxAndOffsetInAP(diskArray.storageInfo, idx);

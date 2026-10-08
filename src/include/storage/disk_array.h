@@ -202,8 +202,8 @@ protected:
     }
 
     uint64_t getNumAPs(const DiskArrayHeader& header) const {
-        return (header.numElements + storageInfo.numElementsPerPage - 1) /
-               storageInfo.numElementsPerPage;
+        return header.numElements / storageInfo.numElementsPerPage +
+               (header.numElements % storageInfo.numElementsPerPage != 0);
     }
 
     void setNextPIPPageIDxOfPIPNoLock(uint64_t pipIdxOfPreviousPIP,
@@ -223,6 +223,7 @@ protected:
 
 private:
     bool checkOutOfBoundAccess(transaction::TransactionType trxType, uint64_t idx) const;
+    void validateArrayPageIdxs() const;
     bool hasPIPUpdatesNoLock(uint64_t pipIdx) const;
 
     const DiskArrayHeader& getDiskArrayHeader(transaction::TransactionType trxType) const {

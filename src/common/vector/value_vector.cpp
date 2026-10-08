@@ -6,6 +6,7 @@
 #include "common/null_buffer.h"
 #include "common/serializer/deserializer.h"
 #include "common/serializer/serializer.h"
+#include "common/string_format.h"
 #include "common/system_config.h"
 #include "common/types/uint128_t.h"
 #include "common/types/value/nested.h"
@@ -407,6 +408,11 @@ std::unique_ptr<ValueVector> ValueVector::deSerialize(Deserializer& deSer,
     deSer.validateDebuggingInfo(key, "num_values");
     sel_t numValues = 0;
     deSer.deserializeValue<sel_t>(numValues);
+    if (numValues > DEFAULT_VECTOR_CAPACITY) {
+        throw RuntimeException(
+            stringFormat("Corrupted WAL record: vector num_values {} exceeds capacity {}.",
+                numValues, DEFAULT_VECTOR_CAPACITY));
+    }
     result->state->getSelVectorUnsafe().setSelSize(numValues);
     KU_ASSERT(result->state->getSelVector().isUnfiltered());
     bool isNull = false;

@@ -12,3 +12,7 @@ add_executable(string_chunk_scan_test string_chunk_scan_test.cpp)
 target_link_libraries(string_chunk_scan_test PRIVATE GTEST_LIB lbug)
 include(GoogleTest)
 gtest_discover_tests(string_chunk_scan_test DISCOVERY_TIMEOUT 600 DISCOVERY_MODE PRE_TEST)
+
+add_executable(input_validation_test input_validation_test.cpp)
+target_link_libraries(input_validation_test PRIVATE GTEST_LIB lbug)
+gtest_discover_tests(input_validation_test DISCOVERY_TIMEOUT 600 DISCOVERY_MODE PRE_TEST)

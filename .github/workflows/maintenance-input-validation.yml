@@ -1,0 +1,32 @@
+name: Maintenance input validation
+
+on:
+  pull_request:
+    branches: [rust_Port]
+  push:
+    branches: [rust_Port]
+
+permissions:
+  contents: read
+
+jobs:
+  native-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure assertion-free maintenance tests
+        run: >-
+          cmake -S . -B build/maintenance-validation -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DENABLE_RUNTIME_CHECKS=OFF
+          -DBUILD_TESTS=ON -DBUILD_EXTENSION_TESTS=OFF -DBUILD_SHELL=OFF
+      - name: Build bounded regression targets
+        run: cmake --build build/maintenance-validation --target input_validation_test string_chunk_scan_test -j 8
+      - name: Run input and existing string-scan regressions
+        run: >-
+          ctest --test-dir build/maintenance-validation/test --output-on-failure --no-tests=error
+          -R '^(InputValidationTest|StringChunkScanTest)\.'

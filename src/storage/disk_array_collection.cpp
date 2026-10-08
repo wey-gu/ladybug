@@ -1,5 +1,7 @@
 #include "storage/disk_array_collection.h"
 
+#include <unordered_set>
+
 #include "common/system_config.h"
 #include "common/types/types.h"
 #include "storage/file_handle.h"
@@ -25,14 +27,25 @@ DiskArrayCollection::DiskArrayCollection(FileHandle& fileHandle, ShadowFile& sha
       numHeaders{0} {
     // Read headers from disk
     page_idx_t headerPageIdx = firstHeaderPage;
+    std::unordered_set<page_idx_t> visitedHeaderPages;
     do {
-        fileHandle.optimisticReadPage(headerPageIdx, [&](auto* frame) {
-            const auto page = reinterpret_cast<HeaderPage*>(frame);
-            headersForReadTrx.push_back(std::make_unique<HeaderPage>(*page));
-            headersForWriteTrx.push_back(std::make_unique<HeaderPage>(*page));
-            headerPageIdx = page->nextHeaderPage;
-            numHeaders += page->numHeaders;
-        });
+        if (headerPageIdx == 0 || headerPageIdx >= fileHandle.getNumPages()) {
+            throw RuntimeException("Disk array header page is reserved or outside the file.");
+        }
+        if (!visitedHeaderPages.insert(headerPageIdx).second) {
+            throw RuntimeException("Disk array header page chain contains a cycle.");
+        }
+        HeaderPage headerPage;
+        // Optimistic reads may retry; only the local snapshot may change in the callback.
+        fileHandle.optimisticReadPage(headerPageIdx,
+            [&](auto* frame) { headerPage = *reinterpret_cast<const HeaderPage*>(frame); });
+        if (headerPage.numHeaders > HeaderPage::NUM_HEADERS_PER_PAGE) {
+            throw RuntimeException("Disk array header count exceeds the page capacity.");
+        }
+        headersForReadTrx.push_back(std::make_unique<HeaderPage>(headerPage));
+        headersForWriteTrx.push_back(std::make_unique<HeaderPage>(headerPage));
+        headerPageIdx = headerPage.nextHeaderPage;
+        numHeaders += headerPage.numHeaders;
     } while (headerPageIdx != INVALID_PAGE_IDX);
     headerPagesOnDisk = headersForReadTrx.size();
 }
