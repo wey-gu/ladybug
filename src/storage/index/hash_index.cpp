@@ -480,7 +480,12 @@ PrimaryKeyIndex::PrimaryKeyIndex(IndexInfo indexInfo, std::unique_ptr<IndexStora
     : Index{std::move(indexInfo), std::move(storageInfo)}, shadowFile{*shadowFile} {
     auto& hashIndexStorageInfo = this->storageInfo->cast<PrimaryKeyIndexStorageInfo>();
     if (hashIndexStorageInfo.firstHeaderPage == INVALID_PAGE_IDX) {
-        KU_ASSERT(hashIndexStorageInfo.overflowHeaderPage == INVALID_PAGE_IDX);
+        // An empty STRING primary-key index may checkpoint its overflow header
+        // before allocating any hash-index header pages. Persistent FTS indexes
+        // can produce this state for their empty internal tables. Reuse the
+        // existing overflow file below while initializing empty hash arrays.
+        KU_ASSERT(hashIndexStorageInfo.overflowHeaderPage == INVALID_PAGE_IDX ||
+                  this->indexInfo.keyDataTypes[0] == PhysicalTypeID::STRING);
         hashIndexHeadersForReadTrx.resize(NUM_HASH_INDEXES);
         hashIndexHeadersForWriteTrx.resize(NUM_HASH_INDEXES);
         hashIndexDiskArrays = std::make_unique<DiskArrayCollection>(*pageAllocator.getDataFH(),
