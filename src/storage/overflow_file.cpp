@@ -2,6 +2,8 @@
 
 #include <memory>
 
+#include "common/exception/runtime.h"
+#include "common/string_format.h"
 #include "common/type_utils.h"
 #include "common/types/types.h"
 #include "storage/buffer_manager/memory_manager.h"
@@ -214,6 +216,11 @@ common::page_idx_t OverflowFile::getNewPageIdx(PageAllocator* pageAllocator) {
 void OverflowFile::readFromDisk(TransactionType trxType, page_idx_t pageIdx,
     const std::function<void(uint8_t*)>& func) const {
     KU_ASSERT(shadowFile);
+    if (pageIdx >= fileHandle->getNumPages()) {
+        throw RuntimeException(
+            stringFormat("Cannot read overflow page {}: out of bounds for file with {} pages.",
+                pageIdx, fileHandle->getNumPages()));
+    }
     auto [fileHandleToPin, pageIdxToPin] = ShadowUtils::getFileHandleAndPhysicalPageIdxToPin(
         *fileHandle, pageIdx, *shadowFile, trxType);
     fileHandleToPin->optimisticReadPage(pageIdxToPin, func);

@@ -383,12 +383,18 @@ void WALReplayer::replayTableInsertionRecord(const WALRecord& walRecord) const {
     }
 }
 
+static std::shared_ptr<DataChunkState> getInsertionAnchorState(const TableInsertionRecord& record) {
+    if (record.ownedVectors.empty() || !record.ownedVectors[0] || !record.ownedVectors[0]->state) {
+        throw RuntimeException("Corrupted WAL record: table insertion has no vector state.");
+    }
+    return record.ownedVectors[0]->state;
+}
+
 void WALReplayer::replayNodeTableInsertRecord(const WALRecord& walRecord) const {
     const auto& insertionRecord = walRecord.constCast<TableInsertionRecord>();
+    const auto anchorState = getInsertionAnchorState(insertionRecord);
     const auto tableID = insertionRecord.tableID;
     auto& table = StorageManager::Get(clientContext)->getTable(tableID)->cast<NodeTable>();
-    KU_ASSERT(!insertionRecord.ownedVectors.empty());
-    const auto anchorState = insertionRecord.ownedVectors[0]->state;
     const auto numNodes = anchorState->getSelVector().getSelSize();
     for (auto i = 0u; i < insertionRecord.ownedVectors.size(); i++) {
         insertionRecord.ownedVectors[i]->setState(anchorState);
@@ -415,10 +421,9 @@ void WALReplayer::replayNodeTableInsertRecord(const WALRecord& walRecord) const 
 
 void WALReplayer::replayRelTableInsertRecord(const WALRecord& walRecord) const {
     const auto& insertionRecord = walRecord.constCast<TableInsertionRecord>();
+    const auto anchorState = getInsertionAnchorState(insertionRecord);
     const auto tableID = insertionRecord.tableID;
     auto& table = StorageManager::Get(clientContext)->getTable(tableID)->cast<RelTable>();
-    KU_ASSERT(!insertionRecord.ownedVectors.empty());
-    const auto anchorState = insertionRecord.ownedVectors[0]->state;
     const auto numRels = anchorState->getSelVector().getSelSize();
     anchorState->getSelVectorUnsafe().setToFiltered(1);
     for (auto i = 0u; i < insertionRecord.ownedVectors.size(); i++) {

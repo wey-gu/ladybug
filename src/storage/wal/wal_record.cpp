@@ -295,6 +295,10 @@ std::unique_ptr<TableInsertionRecord> TableInsertionRecord::deserialize(Deserial
     deserializer.deserializeValue<row_idx_t>(numRows);
     deserializer.validateDebuggingInfo(key, "num_vectors");
     deserializer.deserializeValue(numVectors);
+    // Reject the malformed record during dry replay, before any table or vector is dereferenced.
+    if (numVectors == 0) {
+        throw RuntimeException("Corrupted WAL record: table insertion has no vectors.");
+    }
     auto resultChunkState = DataChunkState::getSingleValueDataChunkState();
     valueVectors.reserve(numVectors);
     for (auto i = 0u; i < numVectors; i++) {
