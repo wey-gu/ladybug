@@ -344,7 +344,7 @@ DiskArrayInternal::getAPPageIdxAndAddAPToPIPIfNecessaryForWriteTrxNoLock(
 }
 
 DiskArrayInternal::WriteIterator& DiskArrayInternal::WriteIterator::seek(size_t newIdx) {
-    KU_ASSERT(newIdx < diskArray.headerForWriteTrx.numElements);
+    diskArray.checkOutOfBoundAccess(TRX_TYPE, newIdx);
     auto oldPageIdx = apCursor.pageIdx;
     idx = newIdx;
     apCursor = getAPIdxAndOffsetInAP(diskArray.storageInfo, idx);

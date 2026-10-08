@@ -138,6 +138,19 @@ TEST_F(InputValidationTest, DiskArrayUpdateRejectsLogicalOutOfBounds) {
     EXPECT_EQ(array.get(0, &transaction::DUMMY_TRANSACTION), 42);
 }
 
+TEST_F(InputValidationTest, DiskArrayIteratorRejectsOutOfBoundsWithoutChangingPosition) {
+    const auto header = oneElementArray();
+    auto writeHeader = header;
+    DiskArray<uint64_t> array{file(), header, writeHeader,
+        &database->getStorageManager()->getShadowFile()};
+    auto iterator = array.iter_mut();
+    iterator.seek(0);
+    EXPECT_EQ(*iterator, 42);
+    EXPECT_THROW(iterator.seek(1), RuntimeException);
+    EXPECT_EQ(iterator.idx(), 0);
+    EXPECT_EQ(*iterator, 42);
+}
+
 TEST_F(InputValidationTest, DiskArrayRejectsMissingPageIndices) {
     DiskArrayHeader header;
     header.numElements = 1;
@@ -320,6 +333,15 @@ TEST_F(InputValidationTest, StrictOpenRejectsMalformedWALWithoutChangingSourceBy
     database.reset();
     const auto original = readBytes(path);
     const auto walPath = StorageUtils::getWALFilePath(path);
+    const auto shadowPath = StorageUtils::getShadowFilePath(path);
+    const std::string shadow = "isolated-shadow-evidence";
+    {
+        std::ofstream stream{shadowPath, std::ios::binary | std::ios::trunc};
+        ASSERT_TRUE(stream.is_open());
+        stream.write(shadow.data(), shadow.size());
+        stream.flush();
+        ASSERT_TRUE(stream.good());
+    }
     for (const auto type : {TableType::NODE, TableType::REL}) {
         auto writer = std::make_shared<BufferWriter>();
         Serializer serializer{writer};
@@ -339,6 +361,7 @@ TEST_F(InputValidationTest, StrictOpenRejectsMalformedWALWithoutChangingSourceBy
         EXPECT_THROW((main::Database{path, config}), RuntimeException);
         EXPECT_EQ(readBytes(path), original);
         EXPECT_EQ(readBytes(walPath), wal);
+        EXPECT_EQ(readBytes(shadowPath), shadow);
     }
 }
 
@@ -348,27 +371,41 @@ TEST_F(InputValidationTest, ValidWALReplaysAndCheckpointReopens) {
         main::Connection connection{database.get()};
         ASSERT_TRUE(
             connection.query("CREATE NODE TABLE item(id INT64, PRIMARY KEY(id))")->isSuccess());
+        ASSERT_TRUE(
+            connection.query("CREATE REL TABLE edge(FROM item TO item, note STRING)")->isSuccess());
         ASSERT_TRUE(connection.query("CHECKPOINT")->isSuccess());
         ASSERT_TRUE(connection.query("CREATE (:item {id: 42})")->isSuccess());
+        ASSERT_TRUE(connection.query("CREATE (:item {id: 43})")->isSuccess());
+        ASSERT_TRUE(connection
+                .query("MATCH (a:item), (b:item) WHERE a.id = 42 AND b.id = 43 "
+                       "CREATE (a)-[:edge {note: 'kept'}]->(b)")
+                ->isSuccess());
     }
     database.reset();
     database = std::make_unique<main::Database>(path, config);
     {
         main::Connection connection{database.get()};
-        auto result = connection.query("MATCH (n:item) RETURN n.id");
+        auto result =
+            connection.query("MATCH (a:item)-[r:edge]->(b:item) RETURN a.id, b.id, r.note");
         ASSERT_TRUE(result->isSuccess());
         ASSERT_TRUE(result->hasNext());
-        EXPECT_EQ(result->getNext()->getValue(0)->getValue<int64_t>(), 42);
+        const auto row = result->getNext();
+        EXPECT_EQ(row->getValue(0)->getValue<int64_t>(), 42);
+        EXPECT_EQ(row->getValue(1)->getValue<int64_t>(), 43);
+        EXPECT_EQ(row->getValue(2)->getValue<std::string>(), "kept");
         EXPECT_FALSE(result->hasNext());
         ASSERT_TRUE(connection.query("CHECKPOINT")->isSuccess());
     }
     database.reset();
     database = std::make_unique<main::Database>(path, config);
     main::Connection connection{database.get()};
-    auto result = connection.query("MATCH (n:item) RETURN n.id");
+    auto result = connection.query("MATCH (a:item)-[r:edge]->(b:item) RETURN a.id, b.id, r.note");
     ASSERT_TRUE(result->isSuccess());
     ASSERT_TRUE(result->hasNext());
-    EXPECT_EQ(result->getNext()->getValue(0)->getValue<int64_t>(), 42);
+    const auto row = result->getNext();
+    EXPECT_EQ(row->getValue(0)->getValue<int64_t>(), 42);
+    EXPECT_EQ(row->getValue(1)->getValue<int64_t>(), 43);
+    EXPECT_EQ(row->getValue(2)->getValue<std::string>(), "kept");
     EXPECT_FALSE(result->hasNext());
 }
 
