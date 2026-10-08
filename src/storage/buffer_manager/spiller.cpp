@@ -17,11 +17,7 @@ namespace storage {
 
 Spiller::Spiller(std::string tmpFilePath, BufferManager& bufferManager,
     common::VirtualFileSystem* vfs)
-    : tmpFilePath{std::move(tmpFilePath)}, bufferManager{bufferManager}, vfs{vfs}, dataFH{nullptr} {
-    // Clear the file if it already existed (e.g. from a previous run which
-    // failed to clean up).
-    vfs->removeFileIfExists(this->tmpFilePath);
-}
+    : tmpFilePath{std::move(tmpFilePath)}, bufferManager{bufferManager}, vfs{vfs}, dataFH{nullptr} {}
 
 FileHandle* Spiller::getOrCreateDataFH() const {
     if (dataFH.load()) {
@@ -32,6 +28,9 @@ FileHandle* Spiller::getOrCreateDataFH() const {
     if (dataFH.load()) {
         return dataFH;
     }
+    // Lazy creation happens only once the writable database holds its file lock.
+    // The constructor itself must not delete another process's active spill file.
+    vfs->removeFileIfExists(this->tmpFilePath);
     const_cast<Spiller*>(this)->dataFH = bufferManager.getFileHandle(tmpFilePath,
         FileHandle::O_PERSISTENT_FILE_CREATE_NOT_EXISTS, vfs, nullptr);
     return dataFH;
@@ -61,7 +60,11 @@ Spiller::~Spiller() {
     // This should be safe as long as the VFS is always using a local file system and the VFS is
     // destroyed after the buffer manager
     try {
-        vfs->removeFileIfExists(this->tmpFilePath);
+        // A constructor that failed to acquire the database lock never owned
+        // this spill file. Preserve a different live process's file.
+        if (dataFH.load()) {
+            vfs->removeFileIfExists(this->tmpFilePath);
+        }
     } catch (common::IOException&) {} // NOLINT
 }
 

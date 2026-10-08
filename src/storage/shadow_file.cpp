@@ -97,17 +97,10 @@ void ShadowFile::replayShadowPageRecords(ClientContext& context) {
     auto shadowFilePath = StorageUtils::getShadowFilePath(context.getDatabasePath());
     auto shadowFileInfo = vfs->openFile(shadowFilePath, FileOpenFlags(FileFlags::READ_ONLY));
 
-    std::unique_ptr<FileInfo> dataFileInfo;
-    try {
-        dataFileInfo = vfs->openFile(context.getDatabasePath(),
-            FileOpenFlags{FileFlags::WRITE | FileFlags::READ_ONLY, FileLockType::WRITE_LOCK});
-    } catch (IOException& e) {
-        throw RuntimeException(stringFormat(
-            "Found shadow file {} but no corresponding database file. This file "
-            "may have been left behind from a previous database with the same name. If it is safe "
-            "to do so, please delete this file and restart the database.",
-            shadowFilePath));
-    }
+    // Database construction already acquired and retained the data-file lock.
+    // Reopening the same inode here would release that lock when the temporary
+    // descriptor closes on POSIX, and can conflict with it on Windows.
+    auto* dataFileInfo = StorageManager::Get(context)->getDataFH()->getFileInfo();
 
     ShadowFileHeader header;
     const auto headerBuffer = std::make_unique<uint8_t[]>(LBUG_PAGE_SIZE);

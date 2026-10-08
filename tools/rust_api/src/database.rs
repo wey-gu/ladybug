@@ -142,6 +142,51 @@ impl Database {
         })
     }
 
+    /// Runs a recovery callback after acquiring the database file lock and before WAL replay.
+    /// Return true to continue, false to fail construction without replay.
+    /// The callback runs synchronously once, cannot access the unfinished database, and must
+    /// not open/close another handle for the locked database file. A panic fails construction
+    /// before replay (with panic=abort, the process terminates and its OS lock is released).
+    pub fn new_with_recovery<P: AsRef<Path>, F: FnOnce() -> bool>(
+        path: P,
+        config: SystemConfig,
+        before_recovery: F,
+    ) -> Result<Self, Error> {
+        fn run<F: FnOnce() -> bool>(context: usize) -> bool {
+            // SAFETY: the synchronous native constructor invokes this callback once, while
+            // the stack-owned Option<F> lives. It neither retains nor changes the pointer.
+            let state = unsafe { &mut *(context as *mut (Option<F>, bool)) };
+            let success = state.0.take().is_some_and(|callback| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(callback))
+                    .is_ok_and(|success| success)
+            });
+            state.1 = !success;
+            success
+        }
+        let mut callback = (Some(before_recovery), false);
+        let db = ffi::new_database_with_recovery(
+            ffi::StringView::new(&path.as_ref().display().to_string()),
+            config.buffer_pool_size,
+            config.max_num_threads,
+            config.enable_compression,
+            config.read_only,
+            config.max_db_size,
+            config.auto_checkpoint,
+            config.checkpoint_threshold,
+            config.throw_on_wal_replay_failure,
+            config.enable_checksums,
+            run::<F>,
+            &mut callback as *mut (Option<F>, bool) as usize,
+        );
+        match db {
+            Ok(db) => Ok(Database {
+                db: UnsafeCell::new(db),
+            }),
+            Err(_) if callback.1 => Err(Error::BeforeRecoveryFailed),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Creates an in-memory database
     ///
     /// Alias for `Database::new(":memory:", config)`

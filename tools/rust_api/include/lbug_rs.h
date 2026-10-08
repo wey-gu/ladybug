@@ -98,6 +98,12 @@ std::unique_ptr<lbug::main::Database> new_database(std::string_view databasePath
     uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
     bool throwOnWalReplayFailure, bool enableChecksums);
 
+std::unique_ptr<lbug::main::Database> new_database_with_recovery(std::string_view databasePath,
+    uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
+    uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
+    bool throwOnWalReplayFailure, bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery,
+    size_t context);
+
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);
 
 /* Connection */

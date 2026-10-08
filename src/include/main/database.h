@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -107,6 +108,10 @@ public:
      */
     LBUG_API explicit Database(std::string_view databasePath,
         SystemConfig systemConfig = SystemConfig());
+    /** Run file recovery while holding the actual database lock, before WAL replay.
+     * The callback must not access this partially initialized database or release its lock. */
+    LBUG_API Database(std::string_view databasePath, SystemConfig systemConfig,
+        const std::function<void()>& beforeRecovery);
     /**
      * @brief Destructs the database object.
      */
@@ -172,6 +177,8 @@ private:
 
     static std::unique_ptr<storage::BufferManager> initBufferManager(const Database& db);
     void initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc);
+    void initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc,
+        const std::function<void()>& beforeRecovery);
 
     // factory method only to be used for tests
     Database(std::string_view databasePath, SystemConfig systemConfig,

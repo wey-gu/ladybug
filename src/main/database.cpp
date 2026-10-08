@@ -92,6 +92,12 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     initMembers(databasePath, constructBMFunc);
 }
 
+Database::Database(std::string_view databasePath, SystemConfig systemConfig,
+    const std::function<void()>& beforeRecovery)
+    : dbConfig(systemConfig) {
+    initMembers(databasePath, initBufferManager, beforeRecovery);
+}
+
 std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
     return std::make_unique<BufferManager>(db.databasePath,
         StorageUtils::getTmpFilePath(db.databasePath), db.dbConfig.bufferPoolSize,
@@ -99,6 +105,11 @@ std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
 }
 
 void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc) {
+    initMembers(dbPath, initBmFunc, {});
+}
+
+void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc,
+    const std::function<void()>& beforeRecovery) {
     // To expand a path with home directory(~), we have to pass in a dummy clientContext which
     // handles the home directory expansion.
     const auto dbPathStr = std::string(dbPath);
@@ -128,10 +139,18 @@ void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFu
 
     extensionManager = std::make_unique<extension::ExtensionManager>();
     dbLifeCycleManager = std::make_shared<DatabaseLifeCycleManager>();
+    if (beforeRecovery && (dbConfig.readOnly || clientContext.isInMemory())) {
+        throw RuntimeException("Before-recovery callback requires a persistent writable database.");
+    }
+    // Acquire the same data-file handle retained for the entire database lifetime.
+    // WAL replay (including removal of an empty WAL) must never precede this lock.
+    storageManager->initDataFileHandle(vfs.get(), &clientContext);
     if (clientContext.isInMemory()) {
-        storageManager->initDataFileHandle(vfs.get(), &clientContext);
         extensionManager->autoLoadLinkedExtensions(&clientContext);
         return;
+    }
+    if (beforeRecovery) {
+        beforeRecovery();
     }
     StorageManager::recover(clientContext, dbConfig.throwOnWalReplayFailure,
         dbConfig.enableChecksums);

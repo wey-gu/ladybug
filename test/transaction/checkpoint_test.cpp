@@ -1,4 +1,13 @@
 #include <fstream>
+#include <filesystem>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include "api_test/private_api_test.h"
 #include "common/exception/runtime.h"
@@ -194,6 +203,70 @@ TEST_F(FlakyCheckpointerTest, RecoverFromCheckpointApplyingShadowFailure) {
     };
     FlakyCheckpointer flakyCheckpointer(initFlakyCheckpointer);
     runTest(flakyCheckpointer);
+}
+
+TEST_F(FlakyCheckpointerTest, ShadowReplayKeepsDatabaseLockUntilClose) {
+    if (inMemMode || systemConfig->checkpointThreshold == 0) {
+        GTEST_SKIP();
+    }
+    auto initFlakyCheckpointer = [](main::ClientContext& context) {
+        return std::make_unique<FlakyCheckpointerFailsOnApplyingShadow>(context);
+    };
+    runFlakyCheckpoint(FlakyCheckpointer(initFlakyCheckpointer));
+    createDBAndConn(); // Replays the checkpoint WAL and its shadow pages.
+    auto result = conn->query("MATCH (a:test) RETURN COUNT(a);");
+    ASSERT_TRUE(result->isSuccess());
+    ASSERT_EQ(result->getNext()->getValue(0)->getValue<int64_t>(), 5000);
+
+    const auto independentWriterCanLock = [&]() {
+#if defined(_WIN32)
+        // Windows file locks belong to a handle, so a second handle is an
+        // independent contender even inside this process.
+        const auto path = std::filesystem::u8path(databasePath);
+        const auto handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        EXPECT_NE(handle, INVALID_HANDLE_VALUE);
+        if (handle == INVALID_HANDLE_VALUE) {
+            return false;
+        }
+        OVERLAPPED overlapped = {};
+        const auto locked = LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+            0, 1, 0, &overlapped);
+        const auto error = GetLastError();
+        EXPECT_TRUE(locked || error == ERROR_LOCK_VIOLATION);
+        if (locked) {
+            EXPECT_TRUE(UnlockFileEx(handle, 0, 1, 0, &overlapped));
+        }
+        CloseHandle(handle);
+        return locked != 0;
+#else
+        // A forked child only makes syscalls; it must not run engine code after fork.
+        const auto pid = fork();
+        EXPECT_GE(pid, 0);
+        if (pid == 0) {
+            const auto fd = open(databasePath.c_str(), O_RDWR);
+            if (fd < 0) {
+                _exit(2);
+            }
+            struct flock lock {};
+            lock.l_type = F_WRLCK;
+            lock.l_whence = SEEK_SET;
+            const auto rc = fcntl(fd, F_SETLK, &lock);
+            const auto error = errno;
+            close(fd);
+            _exit(rc == 0 ? 1 : (error == EACCES || error == EAGAIN) ? 0 : 2);
+        }
+        int status = 0;
+        EXPECT_EQ(waitpid(pid, &status, 0), pid);
+        EXPECT_TRUE(WIFEXITED(status));
+        return WEXITSTATUS(status) == 1;
+#endif
+    };
+    EXPECT_FALSE(independentWriterCanLock()) << "shadow replay released the live database lock";
+    conn.reset();
+    database.reset();
+    EXPECT_TRUE(independentWriterCanLock()) << "closing the database did not release its lock";
 }
 
 class FlakyCheckpointerFailsOnClearingFiles final : public Checkpointer {

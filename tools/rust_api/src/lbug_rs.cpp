@@ -1,4 +1,5 @@
 #include "lbug_rs.h"
+#include <stdexcept>
 
 using lbug::common::ArrayTypeInfo;
 using lbug::common::Interval;
@@ -88,6 +89,36 @@ std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t b
     systemConfig.throwOnWalReplayFailure = throwOnWalReplayFailure;
     systemConfig.enableChecksums = enableChecksums;
     return std::make_unique<Database>(databasePath, systemConfig);
+}
+
+std::unique_ptr<Database> new_database_with_recovery(std::string_view databasePath,
+    uint64_t bufferPoolSize,
+    uint64_t maxNumThreads, bool enableCompression, bool readOnly, uint64_t maxDBSize,
+    bool autoCheckpoint, int64_t checkpointThreshold, bool throwOnWalReplayFailure,
+    bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery, size_t context) {
+    auto systemConfig = SystemConfig();
+    if (bufferPoolSize > 0) {
+        systemConfig.bufferPoolSize = bufferPoolSize;
+    }
+    if (maxNumThreads > 0) {
+        systemConfig.maxNumThreads = maxNumThreads;
+    }
+    systemConfig.readOnly = readOnly;
+    systemConfig.enableCompression = enableCompression;
+    if (maxDBSize != -1u) {
+        systemConfig.maxDBSize = maxDBSize;
+    }
+    systemConfig.autoCheckpoint = autoCheckpoint;
+    if (checkpointThreshold >= 0) {
+        systemConfig.checkpointThreshold = checkpointThreshold;
+    }
+    systemConfig.throwOnWalReplayFailure = throwOnWalReplayFailure;
+    systemConfig.enableChecksums = enableChecksums;
+    return std::make_unique<Database>(databasePath, systemConfig, [&]() {
+        if (!beforeRecovery(context)) {
+            throw std::runtime_error("Before-recovery callback failed; WAL replay skipped.");
+        }
+    });
 }
 
 std::unique_ptr<lbug::main::Connection> database_connect(lbug::main::Database& database) {

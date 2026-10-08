@@ -38,6 +38,9 @@ StorageManager::StorageManager(const std::string& databasePath, bool readOnly, b
 StorageManager::~StorageManager() = default;
 
 void StorageManager::initDataFileHandle(VirtualFileSystem* vfs, main::ClientContext* context) {
+    if (dataFH) {
+        return;
+    }
     if (inMemory) {
         dataFH = memoryManager.getBufferManager()->getFileHandle(databasePath,
             FileHandle::O_PERSISTENT_FILE_IN_MEM, vfs, context);

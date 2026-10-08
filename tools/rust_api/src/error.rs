@@ -2,6 +2,8 @@ use crate::logical_type::LogicalType;
 use std::fmt;
 
 pub enum Error {
+    /// Before-replay recovery failed; construction stops without WAL replay.
+    BeforeRecoveryFailed,
     /// Exception raised by C++ lbug library
     CxxException(cxx::Exception),
     /// Message produced by lbug when a query fails
@@ -17,6 +19,9 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::BeforeRecoveryFailed => {
+                write!(f, "Before-recovery callback failed; WAL replay skipped.")
+            }
             Error::CxxException(cxx) => write!(f, "{cxx}"),
             Error::FailedQuery(message) => write!(f, "Query execution failed: {message}"),
             Error::FailedPreparedStatement(message) => {

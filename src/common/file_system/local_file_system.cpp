@@ -23,6 +23,7 @@
 
 #include <fcntl.h>
 
+#include <cerrno>
 #include <cstring>
 
 #include "storage/storage_utils.h"
@@ -123,6 +124,12 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
         BOOL rc = LockFileEx(handle, dwFlags, 0 /*reserved*/, 1 /*numBytesLow*/, 0 /*numBytesHigh*/,
             &overlapped);
         if (!rc) {
+            const auto lockError = GetLastError();
+            CloseHandle(handle);
+            if (lockError != ERROR_LOCK_VIOLATION) {
+                throw IOException(stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
+                    fullPath, lockError, std::system_category().message(lockError)));
+            }
             throw IOException(
                 "Could not set lock on file : " + fullPath + "\n" +
                 "See the docs: https://docs.ladybugdb.com/concurrency for more information.");
@@ -143,6 +150,12 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
         fl.l_len = 0;
         int rc = fcntl(fd, F_SETLK, &fl);
         if (rc == -1) {
+            const auto lockError = errno;
+            close(fd);
+            if (lockError != EACCES && lockError != EAGAIN) {
+                throw IOException(stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
+                    fullPath, lockError, std::generic_category().message(lockError)));
+            }
             throw IOException(
                 "Could not set lock on file : " + fullPath + "\n" +
                 "See the docs: https://docs.ladybugdb.com/concurrency for more information.");

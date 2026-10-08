@@ -165,6 +165,22 @@ pub(crate) mod ffi {
             enable_checksums: bool,
         ) -> Result<UniquePtr<Database>>;
 
+        #[allow(clippy::fn_params_excessive_bools)]
+        fn new_database_with_recovery(
+            databasePath: StringView,
+            bufferPoolSize: u64,
+            maxNumThreads: u64,
+            enableCompression: bool,
+            readOnly: bool,
+            maxDBSize: u64,
+            auto_checkpoint: bool,
+            checkpoint_threshold: i64,
+            throw_on_wal_replay_failure: bool,
+            enable_checksums: bool,
+            before_recovery: fn(usize) -> bool,
+            context: usize,
+        ) -> Result<UniquePtr<Database>>;
+
     }
 
     #[namespace = "lbug::main"]
