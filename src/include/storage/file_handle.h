@@ -121,6 +121,7 @@ private:
     void constructPersistentFileHandle(const std::string& path, common::VirtualFileSystem* vfs,
         main::ClientContext* context);
     void constructTmpFileHandle(const std::string& path);
+    void refreshPageCountFromFile();
     common::frame_idx_t getFrameIdx(common::page_idx_t pageIdx) {
         KU_ASSERT(pageIdx < pageCapacity);
         return (frameGroupIdxes[pageIdx >> common::StorageConstants::PAGE_GROUP_SIZE_LOG2]
