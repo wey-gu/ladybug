@@ -52,7 +52,7 @@ bool independentWriterCanLock(const std::string& path) {
     const auto handle = CreateFileW(nativePath.c_str(), GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL, nullptr);
-    EXPECT_NE(handle, INVALID_HANDLE_VALUE);
+    EXPECT_NE(handle, INVALID_HANDLE_VALUE) << "unexpected lock contender open failure";
     if (handle == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -527,7 +527,7 @@ TEST_F(InputValidationTest, IndependentLockProbeDoesNotAcceptUnknownAsBusy) {
 #if defined(_WIN32)
     EXPECT_NONFATAL_FAILURE(
         (void)independentWriterCanLock((directory / "missing.lbug").string()),
-        "INVALID_HANDLE_VALUE");
+        "unexpected lock contender open failure");
 #else
     EXPECT_NONFATAL_FAILURE(
         (void)independentWriterCanLock((directory / "missing.lbug").string()),
