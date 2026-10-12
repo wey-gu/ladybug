@@ -114,22 +114,34 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
         WALReplayInfo replayInfo;
         try {
             replayInfo = dryReplay(*fileInfo, throwOnWalReplayFailure, enableChecksums);
-        } catch (const MalformedWalException&) {
+        } catch (const MalformedWalException& malformed) {
             // Windows cannot rename an open WAL. Dry replay and its reader have
             // unwound; close this last handle before calling the evidence owner.
             fileInfo.reset();
             // A catchably invalid checkpoint cannot authorize WAL isolation.
             // This loads checkpoint metadata without applying WAL/shadow pages.
-            checkpointer.readCheckpoint();
+            try {
+                checkpointer.readCheckpoint();
+            } catch (const std::exception& failure) {
+                throw RuntimeException(std::string{"Checkpoint validation failed during malformed-WAL admission: "} +
+                    failure.what() + "; original WAL failure: " + malformed.what());
+            }
             auto* main = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
-            if (!clientContext.getDatabase()->tryRecoverMalformedWal(*main)) {
+            bool recovered = false;
+            try {
+                recovered = clientContext.getDatabase()->tryRecoverMalformedWal(*main);
+            } catch (const std::exception& failure) {
+                throw RuntimeException(std::string{"Malformed-WAL recovery callback failed: "} +
+                    failure.what() + "; original WAL failure: " + malformed.what());
+            }
+            if (!recovered) {
                 throw;
             }
             // The owner must have retained evidence and isolated the active WAL.
             // Never continue a stale reader, delete shadow evidence, or replay a
             // partially decoded prefix after the bounded recovery decision.
             if (vfs->fileOrPathExists(walPath, &clientContext)) {
-                throw RuntimeException("Malformed-WAL recovery left the active WAL present.");
+                throw RuntimeException(std::string{"Malformed-WAL recovery left the active WAL present; original WAL failure: "} + malformed.what());
             }
             return;
         }

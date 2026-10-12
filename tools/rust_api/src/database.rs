@@ -6,6 +6,13 @@ use std::path::Path;
 use crate::error::Error;
 use crate::ffi::ffi;
 
+enum RecoveryCallbackFailure {
+    AdmissionFailed,
+    AdmissionPanicked,
+    RecoveryFailed,
+    RecoveryPanicked,
+}
+
 /// Borrowed read-only access to the main file through its retained native lock.
 /// Available only inside a synchronous malformed-WAL recovery callback.
 pub struct WalRecoverySnapshot<'a> {
@@ -249,7 +256,9 @@ impl Database {
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
             F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
         {
-            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, Option<Error>)) };
+            let state = unsafe {
+                &mut *(context as *mut (Option<F>, Option<A>, Option<RecoveryCallbackFailure>))
+            };
             let snapshot = WalRecoverySnapshot { native };
             let outcome = state.0.take().map(|recover| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recover(&snapshot)))
@@ -257,11 +266,11 @@ impl Database {
             match outcome {
                 Some(Ok(true)) => true,
                 Some(Err(_)) => {
-                    state.2 = Some(Error::MalformedWalRecoveryPanicked);
+                    state.2 = Some(RecoveryCallbackFailure::RecoveryPanicked);
                     false
                 }
                 _ => {
-                    state.2 = Some(Error::MalformedWalRecoveryFailed);
+                    state.2 = Some(RecoveryCallbackFailure::RecoveryFailed);
                     false
                 }
             }
@@ -271,7 +280,9 @@ impl Database {
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
             F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
         {
-            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, Option<Error>)) };
+            let state = unsafe {
+                &mut *(context as *mut (Option<F>, Option<A>, Option<RecoveryCallbackFailure>))
+            };
             let snapshot = WalRecoverySnapshot { native };
             let outcome = state.1.take().map(|admit| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| admit(&snapshot)))
@@ -279,16 +290,16 @@ impl Database {
             match outcome {
                 Some(Ok(true)) => true,
                 Some(Err(_)) => {
-                    state.2 = Some(Error::WalAdmissionPanicked);
+                    state.2 = Some(RecoveryCallbackFailure::AdmissionPanicked);
                     false
                 }
                 _ => {
-                    state.2 = Some(Error::WalAdmissionFailed);
+                    state.2 = Some(RecoveryCallbackFailure::AdmissionFailed);
                     false
                 }
             }
         }
-        let mut callback = (Some(recover), Some(admit), None::<Error>);
+        let mut callback = (Some(recover), Some(admit), None::<RecoveryCallbackFailure>);
         let db = ffi::new_database_with_malformed_wal_recovery(
             ffi::StringView::new(&path.as_ref().display().to_string()),
             config.buffer_pool_size,
@@ -308,7 +319,17 @@ impl Database {
             Ok(db) => Ok(Database {
                 db: UnsafeCell::new(db),
             }),
-            Err(error) => Err(callback.2.unwrap_or_else(|| error.into())),
+            Err(error) => Err(match callback.2 {
+                Some(RecoveryCallbackFailure::AdmissionFailed) => Error::WalAdmissionFailed,
+                Some(RecoveryCallbackFailure::AdmissionPanicked) => Error::WalAdmissionPanicked,
+                Some(RecoveryCallbackFailure::RecoveryFailed) => {
+                    Error::MalformedWalRecoveryFailed(Box::new(error.into()))
+                }
+                Some(RecoveryCallbackFailure::RecoveryPanicked) => {
+                    Error::MalformedWalRecoveryPanicked(Box::new(error.into()))
+                }
+                None => error.into(),
+            }),
         }
     }
 

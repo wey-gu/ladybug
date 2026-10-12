@@ -211,10 +211,9 @@ std::unique_ptr<Database> new_database_with_malformed_wal_recovery(
     return std::make_unique<Database>(databasePath, config, std::function<void()>{},
         [&](lbug::common::FileInfo& main) {
             const WalRecoveryContext snapshot{main};
-            if (!recover(context, snapshot)) {
-                throw std::runtime_error("Malformed-WAL recovery evidence callback failed.");
-            }
-            return true;
+            // Returning false lets the native catch rethrow the original typed
+            // malformed cause. Rust adds the callback phase without losing it.
+            return recover(context, snapshot);
         }, [&](lbug::common::FileInfo& main) {
             const WalRecoveryContext snapshot{main};
             return admit(context, snapshot);

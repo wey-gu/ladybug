@@ -123,12 +123,26 @@ mod startup_wal_recovery_tests {
                 match mode {
                     0 => matches!(error, Error::WalAdmissionFailed),
                     1 => matches!(error, Error::WalAdmissionPanicked),
-                    2 => matches!(error, Error::MalformedWalRecoveryFailed),
-                    _ => matches!(error, Error::MalformedWalRecoveryPanicked),
+                    2 => matches!(error, Error::MalformedWalRecoveryFailed(_)),
+                    _ => matches!(error, Error::MalformedWalRecoveryPanicked(_)),
                 },
                 "{error}"
             );
             assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
+            if mode >= 2 {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Corrupted wal file. Read out invalid WAL record type."),
+                    "original WAL cause lost: {error}"
+                );
+                assert!(matches!(
+                    std::error::Error::source(&error)
+                        .unwrap()
+                        .downcast_ref::<Error>(),
+                    Some(Error::MalformedWal(_))
+                ));
+            }
         }
     }
 
@@ -144,6 +158,27 @@ mod startup_wal_recovery_tests {
             .unwrap();
         let error = Database::new(&path, config().throw_on_wal_replay_failure(false)).unwrap_err();
         assert!(!matches!(error, Error::MalformedWal(_)), "{error}");
+        assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
+    }
+
+    #[test]
+    fn callback_cannot_report_success_with_active_wal_and_preserves_original_cause() {
+        let (_directory, path) = seed();
+        damage(&path);
+        let before = std::fs::read(wal(&path)).unwrap();
+        let error =
+            Database::new_with_malformed_wal_recovery(&path, config(), |_| true).unwrap_err();
+        assert!(
+            !matches!(error, Error::MalformedWal(_)),
+            "post-callback failure is not new isolation authority: {error}"
+        );
+        assert!(error.to_string().contains("active WAL present"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("Corrupted wal file. Read out invalid WAL record type."),
+            "original cause lost: {error}"
+        );
         assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
     }
 
@@ -189,6 +224,14 @@ mod startup_wal_recovery_tests {
         let wal_before = std::fs::read(wal(&path)).unwrap();
         let error = Database::new(&path, config().read_only(true)).unwrap_err();
         assert!(matches!(error, Error::MalformedWal(_)), "{error}");
+        // Keep the operator recovery classifier's pinned wording while native
+        // admission continues to use typed causes independently of this text.
+        assert!(
+            error
+                .to_string()
+                .contains("Corrupted wal file. Read out invalid WAL record type."),
+            "legacy operator recovery wording lost: {error}"
+        );
         assert_eq!(std::fs::read(&path).unwrap(), main_before);
         assert_eq!(std::fs::read(wal(&path)).unwrap(), wal_before);
     }
@@ -295,7 +338,7 @@ mod startup_wal_recovery_tests {
             false
         })
         .unwrap_err();
-        assert!(matches!(error, Error::MalformedWalRecoveryFailed));
+        assert!(matches!(error, Error::MalformedWalRecoveryFailed(_)));
         assert_eq!(std::fs::read(moved).unwrap(), before);
         assert!(wal(&path).exists());
     }

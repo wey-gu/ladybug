@@ -7,11 +7,11 @@ pub enum Error {
     /// Retained-lock admission rejected pending evidence before WAL actions.
     WalAdmissionFailed,
     /// Malformed recovery callback declined after typed input admission.
-    MalformedWalRecoveryFailed,
+    MalformedWalRecoveryFailed(Box<Error>),
     /// Rust admission panic was caught before crossing FFI.
     WalAdmissionPanicked,
     /// Rust recovery panic was caught before crossing FFI.
-    MalformedWalRecoveryPanicked,
+    MalformedWalRecoveryPanicked(Box<Error>),
     /// Strict native dry replay rejected records after validating WAL identity.
     MalformedWal(String),
     /// Exception raised by C++ lbug library
@@ -35,13 +35,15 @@ impl std::fmt::Display for Error {
             Error::WalAdmissionFailed => {
                 write!(f, "WAL admission rejected; no WAL actions performed.")
             }
-            Error::MalformedWalRecoveryFailed => write!(f, "Malformed WAL recovery declined."),
+            Error::MalformedWalRecoveryFailed(cause) => {
+                write!(f, "Malformed WAL recovery declined: {cause}")
+            }
             Error::WalAdmissionPanicked => {
                 write!(f, "WAL admission callback panicked; construction stopped.")
             }
-            Error::MalformedWalRecoveryPanicked => write!(
+            Error::MalformedWalRecoveryPanicked(cause) => write!(
                 f,
-                "Malformed WAL recovery callback panicked; construction stopped."
+                "Malformed WAL recovery callback panicked; construction stopped: {cause}"
             ),
             Error::MalformedWal(message) => write!(f, "{message}"),
             Error::CxxException(cxx) => write!(f, "{cxx}"),
@@ -68,6 +70,8 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::CxxException(cxx) => Some(cxx),
+            Error::MalformedWalRecoveryFailed(cause)
+            | Error::MalformedWalRecoveryPanicked(cause) => Some(cause.as_ref()),
             _ => None,
         }
     }
