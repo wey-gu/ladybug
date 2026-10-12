@@ -16,3 +16,6 @@ gtest_discover_tests(string_chunk_scan_test DISCOVERY_TIMEOUT 600 DISCOVERY_MODE
 add_executable(input_validation_test input_validation_test.cpp)
 target_link_libraries(input_validation_test PRIVATE GTEST_LIB lbug)
 gtest_discover_tests(input_validation_test DISCOVERY_TIMEOUT 600 DISCOVERY_MODE PRE_TEST)
+
+add_executable(simd_capabilities_test simd_capabilities_test.cpp)
+add_test(NAME SimdCapabilitiesTest COMMAND simd_capabilities_test)

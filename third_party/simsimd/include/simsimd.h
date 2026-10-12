@@ -330,78 +330,63 @@ SIMSIMD_PUBLIC void simsimd_find_kernel_punned( //
     simsimd_capability_t *capability_output);
 #endif
 
-#if _SIMSIMD_TARGET_X86
+/** XGETBV is legal only after CPU and OS XSAVE admission. */
+SIMSIMD_PUBLIC unsigned _simsimd_x86_xcr0_available(unsigned leaf1_ecx) {
+    const unsigned prerequisites = (1u << 26) | (1u << 27) | (1u << 28);
+    return (leaf1_ecx & prerequisites) == prerequisites;
+}
 
-/**
- *  @brief  Function to determine the SIMD capabilities of the current 64-bit x86 machine at @b runtime.
- *  @return A bitmask of the SIMD capabilities represented as a `simsimd_capability_t` enum value.
- */
-SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86(void) {
-
-    /// The states of 4 registers populated for a specific "cpuid" assembly call
-    union four_registers_t {
-        int array[4];
-        struct separate_t {
-            unsigned eax, ebx, ecx, edx;
-        } named;
-    } info1, info7, info7sub1;
-
-#if defined(_MSC_VER)
-    __cpuidex(info1.array, 1, 0);
-    __cpuidex(info7.array, 7, 0);
-    __cpuidex(info7sub1.array, 7, 1);
-#else
-    __asm__ __volatile__("cpuid"
-                         : "=a"(info1.named.eax), "=b"(info1.named.ebx), "=c"(info1.named.ecx), "=d"(info1.named.edx)
-                         : "a"(1), "c"(0));
-    __asm__ __volatile__("cpuid"
-                         : "=a"(info7.named.eax), "=b"(info7.named.ebx), "=c"(info7.named.ecx), "=d"(info7.named.edx)
-                         : "a"(7), "c"(0));
-    __asm__ __volatile__("cpuid"
-                         : "=a"(info7sub1.named.eax), "=b"(info7sub1.named.ebx), "=c"(info7sub1.named.ecx),
-                           "=d"(info7sub1.named.edx)
-                         : "a"(7), "c"(1));
-#endif
-
+/** Pure conversion: CPUID describes hardware; XCR0 admits usable OS state. */
+SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86_from_registers(
+    unsigned leaf1_ecx, unsigned leaf7_ebx, unsigned leaf7_ecx, unsigned leaf7_edx,
+    unsigned leaf7sub1_eax, unsigned extended_ecx, simsimd_u64_t xcr0) {
+    unsigned usable_avx = _simsimd_x86_xcr0_available(leaf1_ecx) && (xcr0 & 0x6) == 0x6;
+    unsigned usable_avx512 = usable_avx && (xcr0 & 0xe6) == 0xe6;
+    unsigned supports_bmi2 = (leaf7_ebx & (1u << 8)) != 0;
+    unsigned supports_popcnt = (leaf1_ecx & (1u << 23)) != 0;
+    unsigned supports_lzcnt = (extended_ecx & (1u << 5)) != 0;
     // Check for AVX2 (Function ID 7, EBX register)
     // https://github.com/llvm/llvm-project/blob/50598f0ff44f3a4e75706f8c53f3380fe7faa896/clang/lib/Headers/cpuid.h#L148
-    unsigned supports_avx2 = (info7.named.ebx & 0x00000020) != 0;
+    unsigned supports_avx2 = (leaf7_ebx & 0x00000020) != 0;
     // Check for F16C (Function ID 1, ECX register)
     // https://github.com/llvm/llvm-project/blob/50598f0ff44f3a4e75706f8c53f3380fe7faa896/clang/lib/Headers/cpuid.h#L107
-    unsigned supports_f16c = (info1.named.ecx & 0x20000000) != 0;
-    unsigned supports_fma = (info1.named.ecx & 0x00001000) != 0;
+    unsigned supports_f16c = (leaf1_ecx & 0x20000000) != 0;
+    unsigned supports_fma = (leaf1_ecx & 0x00001000) != 0;
     // Check for AVX512F (Function ID 7, EBX register)
     // https://github.com/llvm/llvm-project/blob/50598f0ff44f3a4e75706f8c53f3380fe7faa896/clang/lib/Headers/cpuid.h#L155
-    unsigned supports_avx512f = (info7.named.ebx & 0x00010000) != 0;
+    unsigned supports_avx512f = (leaf7_ebx & 0x00010000) != 0;
     // Check for AVX512FP16 (Function ID 7, EDX register)
     // https://github.com/llvm/llvm-project/blob/50598f0ff44f3a4e75706f8c53f3380fe7faa896/clang/lib/Headers/cpuid.h#L198C9-L198C23
-    unsigned supports_avx512fp16 = (info7.named.edx & 0x00800000) != 0;
+    unsigned supports_avx512fp16 = (leaf7_edx & 0x00800000) != 0;
     // Check for AVX512VNNI (Function ID 7, ECX register)
-    unsigned supports_avx512vnni = (info7.named.ecx & 0x00000800) != 0;
+    unsigned supports_avx512vnni = (leaf7_ecx & 0x00000800) != 0;
     // Check for AVX512IFMA (Function ID 7, EBX register)
-    unsigned supports_avx512ifma = (info7.named.ebx & 0x00200000) != 0;
+    unsigned supports_avx512ifma = (leaf7_ebx & 0x00200000) != 0;
     // Check for AVX512BITALG (Function ID 7, ECX register)
-    unsigned supports_avx512bitalg = (info7.named.ecx & 0x00001000) != 0;
+    unsigned supports_avx512bitalg = (leaf7_ecx & 0x00001000) != 0;
     // Check for AVX512VBMI2 (Function ID 7, ECX register)
-    unsigned supports_avx512vbmi2 = (info7.named.ecx & 0x00000040) != 0;
+    unsigned supports_avx512vbmi2 = (leaf7_ecx & 0x00000040) != 0;
     // Check for AVX512VPOPCNTDQ (Function ID 7, ECX register)
-    unsigned supports_avx512vpopcntdq = (info7.named.ecx & 0x00004000) != 0;
+    unsigned supports_avx512vpopcntdq = (leaf7_ecx & 0x00004000) != 0;
     // Check for AVX512BF16 (Function ID 7, Sub-leaf 1, EAX register)
     // https://github.com/llvm/llvm-project/blob/50598f0ff44f3a4e75706f8c53f3380fe7faa896/clang/lib/Headers/cpuid.h#L205
-    unsigned supports_avx512bf16 = (info7sub1.named.eax & 0x00000020) != 0;
+    unsigned supports_avx512bf16 = (leaf7sub1_eax & 0x00000020) != 0;
     // Clang doesn't show the VP2INTERSECT flag, but we can get it from QEMU
     // https://stackoverflow.com/a/68289220/2766161
-    unsigned supports_avx512vp2intersect = (info7.named.edx & 0x00000100) != 0;
+    unsigned supports_avx512vp2intersect = (leaf7_edx & 0x00000100) != 0;
 
     // Convert specific features into CPU generations
-    unsigned supports_haswell = supports_avx2 && supports_f16c && supports_fma;
-    unsigned supports_skylake = supports_avx512f;
-    unsigned supports_ice = supports_avx512vnni && supports_avx512ifma && supports_avx512bitalg &&
+    unsigned supports_haswell = usable_avx && supports_avx2 && supports_f16c && supports_fma;
+    // Match the complete compiled baseline (including narrower-width/BMI2 kernels).
+    const unsigned skylake_subset = (1u << 16) | (1u << 17) | (1u << 28) | (1u << 30) | (1u << 31);
+    unsigned supports_skylake = usable_avx512 && supports_haswell && supports_bmi2 && supports_avx512f &&
+                               (leaf7_ebx & skylake_subset) == skylake_subset;
+    unsigned supports_ice = supports_skylake && supports_popcnt && supports_lzcnt && supports_avx512vnni && supports_avx512ifma && supports_avx512bitalg &&
                             supports_avx512vbmi2 && supports_avx512vpopcntdq;
-    unsigned supports_genoa = supports_avx512bf16;
-    unsigned supports_sapphire = supports_avx512fp16;
+    unsigned supports_genoa = supports_skylake && supports_avx512bf16;
+    unsigned supports_sapphire = supports_skylake && supports_avx512fp16;
     // We don't want to accidently enable AVX512VP2INTERSECT on Intel Tiger Lake CPUs
-    unsigned supports_turin = supports_avx512vp2intersect && supports_avx512bf16;
+    unsigned supports_turin = supports_ice && supports_avx512vp2intersect && supports_avx512bf16;
     unsigned supports_sierra = 0;
 
     return (simsimd_capability_t)(                     //
@@ -413,6 +398,48 @@ SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86(void) {
         (simsimd_cap_turin_k * supports_turin) |       //
         (simsimd_cap_sierra_k * supports_sierra) |     //
         (simsimd_cap_serial_k));
+}
+
+#if _SIMSIMD_TARGET_X86
+
+/**
+ *  @brief  Function to determine the SIMD capabilities of the current 64-bit x86 machine at @b runtime.
+ *  @return A bitmask of the SIMD capabilities represented as a `simsimd_capability_t` enum value.
+ */
+SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86(void) {
+
+    union four_registers_t {
+        int array[4];
+        struct separate_t { unsigned eax, ebx, ecx, edx; } named;
+    } info0 = {{0}}, info1 = {{0}}, info7 = {{0}}, info7sub1 = {{0}}, extended0 = {{0}}, extended1 = {{0}};
+#if defined(_MSC_VER)
+#define _SIMSIMD_CPUID(info, leaf, subleaf) __cpuidex((info).array, (int)(leaf), (int)(subleaf))
+#else
+#define _SIMSIMD_CPUID(info, leaf, subleaf) \
+    __asm__ __volatile__("cpuid" : "=a"((info).named.eax), "=b"((info).named.ebx), \
+        "=c"((info).named.ecx), "=d"((info).named.edx) : "a"(leaf), "c"(subleaf))
+#endif
+    _SIMSIMD_CPUID(info0, 0u, 0u);
+    if (info0.named.eax >= 1) _SIMSIMD_CPUID(info1, 1u, 0u);
+    if (info0.named.eax >= 7) {
+        _SIMSIMD_CPUID(info7, 7u, 0u);
+        if (info7.named.eax >= 1) _SIMSIMD_CPUID(info7sub1, 7u, 1u);
+    }
+    _SIMSIMD_CPUID(extended0, 0x80000000u, 0u);
+    if (extended0.named.eax >= 0x80000001u) _SIMSIMD_CPUID(extended1, 0x80000001u, 0u);
+#undef _SIMSIMD_CPUID
+    simsimd_u64_t xcr0 = 0;
+    if (_simsimd_x86_xcr0_available(info1.named.ecx)) {
+#if defined(_MSC_VER)
+        xcr0 = _xgetbv(0);
+#else
+        unsigned low, high;
+        __asm__ __volatile__("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+        xcr0 = (simsimd_u64_t)low | ((simsimd_u64_t)high << 32);
+#endif
+    }
+    return _simsimd_capabilities_x86_from_registers(info1.named.ecx, info7.named.ebx,
+        info7.named.ecx, info7.named.edx, info7sub1.named.eax, extended1.named.ecx, xcr0);
 }
 
 #endif // _SIMSIMD_TARGET_X86

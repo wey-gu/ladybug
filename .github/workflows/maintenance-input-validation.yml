@@ -25,11 +25,11 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release -DENABLE_RUNTIME_CHECKS=OFF
           -DBUILD_TESTS=ON -DBUILD_EXTENSION_TESTS=OFF -DBUILD_SHELL=OFF
       - name: Build bounded regression targets
-        run: cmake --build build/maintenance-validation --target input_validation_test string_chunk_scan_test -j 8
+        run: cmake --build build/maintenance-validation --target input_validation_test string_chunk_scan_test simd_capabilities_test -j 8
       - name: Run input and existing string-scan regressions
         run: >-
           ctest --test-dir build/maintenance-validation/test --output-on-failure --no-tests=error
-          -R '^(InputValidationTest|StringChunkScanTest)\.'
+          -R '^(InputValidationTest|StringChunkScanTest)\.|^SimdCapabilitiesTest$'
 
   empty-index-checkpoint:
     runs-on: ubuntu-24.04
