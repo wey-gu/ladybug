@@ -1,5 +1,4 @@
 #include "storage/wal/wal_replayer.h"
-#include "storage/wal/malformed_wal.h"
 
 #include "binder/binder.h"
 #include "catalog/catalog_entry/scalar_macro_catalog_entry.h"
@@ -14,13 +13,14 @@
 #include "main/client_context.h"
 #include "main/database.h"
 #include "processor/expression_mapper.h"
-#include "storage/file_db_id_utils.h"
 #include "storage/database_header.h"
+#include "storage/file_db_id_utils.h"
 #include "storage/local_storage/local_rel_table.h"
 #include "storage/storage_manager.h"
 #include "storage/table/node_table.h"
 #include "storage/table/rel_table.h"
 #include "storage/wal/checksum_reader.h"
+#include "storage/wal/malformed_wal.h"
 #include "storage/wal/wal_record.h"
 #include "transaction/transaction_context.h"
 
@@ -123,7 +123,8 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
             try {
                 checkpointer.readCheckpoint();
             } catch (const std::exception& failure) {
-                throw RuntimeException(std::string{"Checkpoint validation failed during malformed-WAL admission: "} +
+                throw RuntimeException(
+                    std::string{"Checkpoint validation failed during malformed-WAL admission: "} +
                     failure.what() + "; original WAL failure: " + malformed.what());
             }
             auto* main = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
@@ -132,7 +133,8 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
                 recovered = clientContext.getDatabase()->tryRecoverMalformedWal(*main);
             } catch (const std::exception& failure) {
                 throw RuntimeException(std::string{"Malformed-WAL recovery callback failed: "} +
-                    failure.what() + "; original WAL failure: " + malformed.what());
+                                       failure.what() +
+                                       "; original WAL failure: " + malformed.what());
             }
             if (!recovered) {
                 throw;
@@ -141,7 +143,9 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
             // Never continue a stale reader, delete shadow evidence, or replay a
             // partially decoded prefix after the bounded recovery decision.
             if (vfs->fileOrPathExists(walPath, &clientContext)) {
-                throw RuntimeException(std::string{"Malformed-WAL recovery left the active WAL present; original WAL failure: "} + malformed.what());
+                throw RuntimeException(std::string{"Malformed-WAL recovery left the active WAL "
+                                                   "present; original WAL failure: "} +
+                                       malformed.what());
             }
             return;
         }
@@ -209,7 +213,8 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
             auto* retainedMain = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
             const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain);
             if (mainHeader) {
-                FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID, walHeader.databaseID);
+                FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID,
+                    walHeader.databaseID);
                 matchedPersistedHeader = true;
             }
         }

@@ -9,7 +9,7 @@ namespace lbug::storage {
 class InvalidWalRecordTypeException final : public common::RuntimeException {
 public:
     InvalidWalRecordTypeException()
-        : RuntimeException("Invalid persisted WAL record type.") {}
+        : RuntimeException("Corrupted wal file. Read out invalid WAL record type.") {}
 };
 
 class WalChecksumMismatchException final : public common::StorageException {

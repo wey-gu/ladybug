@@ -358,12 +358,18 @@ mod startup_wal_recovery_tests {
         let main = std::fs::read(&path).unwrap();
         let before = std::fs::read(wal(&path)).unwrap();
         let calls = Cell::new(0);
+        let error = Database::new_with_malformed_wal_recovery(&path, config(), |_| {
+            calls.set(calls.get() + 1);
+            false
+        })
+        .unwrap_err();
+        assert!(!matches!(error, Error::MalformedWal(_)), "{error}");
         assert!(
-            Database::new_with_malformed_wal_recovery(&path, config(), |_| {
-                calls.set(calls.get() + 1);
-                false
-            })
-            .is_err()
+            error.to_string().contains("original WAL failure:")
+                && error
+                    .to_string()
+                    .contains("Corrupted wal file. Read out invalid WAL record type."),
+            "checkpoint failure lost the original WAL cause: {error}"
         );
         assert_eq!(calls.get(), 0);
         assert_eq!(std::fs::read(&path).unwrap(), main);
