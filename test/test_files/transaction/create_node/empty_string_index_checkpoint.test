@@ -1,0 +1,62 @@
+-DATASET CSV empty
+--
+
+-CASE RollbackFirstInsertThenCheckpointAndReopen
+-STATEMENT CALL auto_checkpoint=false
+---- ok
+-STATEMENT CREATE NODE TABLE EmptyIndex(id STRING PRIMARY KEY)
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-STATEMENT BEGIN TRANSACTION
+---- ok
+-STATEMENT CREATE (:EmptyIndex {id: 'rolled-back-long-string-primary-key'})
+---- ok
+-STATEMENT ROLLBACK
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-RELOADDB
+-STATEMENT MATCH (n:EmptyIndex) RETURN count(n)
+---- 1
+0
+-STATEMENT CREATE (:EmptyIndex {id: 'committed-long-string-primary-key'})
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-RELOADDB
+-STATEMENT MATCH (n:EmptyIndex) RETURN n.id
+---- 1
+committed-long-string-primary-key
+
+-CASE CommitAfterEmptyCheckpointWithoutIntermediateReopen
+-STATEMENT CALL auto_checkpoint=false
+---- ok
+-STATEMENT CREATE NODE TABLE EmptyIndex(id STRING PRIMARY KEY)
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-STATEMENT BEGIN TRANSACTION
+---- ok
+-STATEMENT CREATE (:EmptyIndex {id: 'rolled-back-long-string-primary-key'})
+---- ok
+-STATEMENT ROLLBACK
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-STATEMENT CREATE (:EmptyIndex {id: 'committed-long-string-primary-key'})
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-RELOADDB
+-STATEMENT MATCH (n:EmptyIndex) RETURN n.id
+---- 1
+committed-long-string-primary-key
+-STATEMENT MATCH (n:EmptyIndex) DELETE n
+---- ok
+-STATEMENT CHECKPOINT
+---- ok
+-RELOADDB
+-STATEMENT MATCH (n:EmptyIndex) RETURN count(n)
+---- 1
+0

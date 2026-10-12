@@ -681,7 +681,11 @@ void PrimaryKeyIndex::checkpoint(main::ClientContext*, storage::PageAllocator& p
         writeHeaders(pageAllocator);
         hashIndexDiskArrays->checkpoint(getDiskArrayFirstHeaderPage(), pageAllocator);
     }
-    if (overflowFile) {
+    // Empty indexes, including a rolled-back first insert, have no primary
+    // header. Persisting only their overflow header would violate the paired
+    // header invariant checked when the index is reopened.
+    if (overflowFile &&
+        storageInfo->cast<PrimaryKeyIndexStorageInfo>().firstHeaderPage != INVALID_PAGE_IDX) {
         overflowFile->checkpoint(pageAllocator);
         updateOverflowHeaderPageIfNeeded(storageInfo.get(), overflowFile.get());
     }
