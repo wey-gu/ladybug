@@ -4,6 +4,14 @@ use std::fmt;
 pub enum Error {
     /// Before-replay recovery failed; construction stops without WAL replay.
     BeforeRecoveryFailed,
+    /// Retained-lock admission rejected pending evidence before WAL actions.
+    WalAdmissionFailed,
+    /// Malformed recovery callback declined after typed input admission.
+    MalformedWalRecoveryFailed,
+    /// Rust admission panic was caught before crossing FFI.
+    WalAdmissionPanicked,
+    /// Rust recovery panic was caught before crossing FFI.
+    MalformedWalRecoveryPanicked,
     /// Strict native dry replay rejected records after validating WAL identity.
     MalformedWal(String),
     /// Exception raised by C++ lbug library
@@ -24,6 +32,17 @@ impl std::fmt::Display for Error {
             Error::BeforeRecoveryFailed => {
                 write!(f, "Before-recovery callback failed; WAL replay skipped.")
             }
+            Error::WalAdmissionFailed => {
+                write!(f, "WAL admission rejected; no WAL actions performed.")
+            }
+            Error::MalformedWalRecoveryFailed => write!(f, "Malformed WAL recovery declined."),
+            Error::WalAdmissionPanicked => {
+                write!(f, "WAL admission callback panicked; construction stopped.")
+            }
+            Error::MalformedWalRecoveryPanicked => write!(
+                f,
+                "Malformed WAL recovery callback panicked; construction stopped."
+            ),
             Error::MalformedWal(message) => write!(f, "{message}"),
             Error::CxxException(cxx) => write!(f, "{cxx}"),
             Error::FailedQuery(message) => write!(f, "Query execution failed: {message}"),

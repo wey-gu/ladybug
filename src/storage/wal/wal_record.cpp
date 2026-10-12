@@ -1,3 +1,4 @@
+#include "storage/wal/malformed_wal.h"
 #include "storage/wal/wal_record.h"
 
 #include "catalog/catalog_entry/catalog_entry.h"
@@ -73,12 +74,12 @@ std::unique_ptr<WALRecord> WALRecord::deserialize(Deserializer& deserializer,
         walRecord = LoadExtensionRecord::deserialize(deserializer);
     } break;
     case WALRecordType::INVALID_RECORD: {
-        throw RuntimeException("Corrupted wal file. Read out invalid WAL record type.");
+        throw InvalidWalRecordTypeException();
     }
     default: {
         // A persisted enum is untrusted input, not an internal invariant. Keep
         // this catchable; dry replay owns the narrower recovery classification.
-        throw RuntimeException("Corrupted wal file. Read out invalid WAL record type.");
+        throw InvalidWalRecordTypeException();
     }
     }
     walRecord->type = type;

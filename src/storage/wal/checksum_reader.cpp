@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "common/checksum.h"
+#include "storage/wal/malformed_wal.h"
 #include "common/exception/storage.h"
 #include "common/serializer/buffered_file.h"
 #include "common/serializer/deserializer.h"
@@ -49,7 +50,7 @@ void ChecksumReader::onObjectEnd() {
     uint64_t storedChecksum{};
     deserializer.deserializeValue(storedChecksum);
     if (storedChecksum != computedChecksum) {
-        throw common::StorageException(std::string{checksumMismatchMessage});
+        throw WalChecksumMismatchException(std::string{checksumMismatchMessage});
     }
 
     currentEntrySize.reset();

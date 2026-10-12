@@ -376,7 +376,7 @@ SIMSIMD_PUBLIC simsimd_capability_t _simsimd_capabilities_x86_from_registers(
     unsigned supports_avx512vp2intersect = (leaf7_edx & 0x00000100) != 0;
 
     // Convert specific features into CPU generations
-    unsigned supports_haswell = usable_avx && supports_avx2 && supports_f16c && supports_fma;
+    unsigned supports_haswell = usable_avx && supports_avx2 && supports_f16c && supports_fma && supports_popcnt;
     // Match the complete compiled baseline (including narrower-width/BMI2 kernels).
     const unsigned skylake_subset = (1u << 16) | (1u << 17) | (1u << 28) | (1u << 30) | (1u << 31);
     unsigned supports_skylake = usable_avx512 && supports_haswell && supports_bmi2 && supports_avx512f &&

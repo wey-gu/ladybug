@@ -192,14 +192,20 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
         deserializer.getReader()->onObjectBegin();
         const auto walHeader = readWALHeader(deserializer);
         checkWALHeader(walHeader, enableChecksums);
-        auto* retainedMain = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
-        const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain);
-        if (!mainHeader) {
-            throw RuntimeException("WAL replay requires an existing database header.");
+        bool matchedPersistedHeader = false;
+        if (throwOnWalReplayFailure) {
+            auto* retainedMain = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
+            const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain);
+            if (mainHeader) {
+                FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID, walHeader.databaseID);
+                matchedPersistedHeader = true;
+            }
         }
-        FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID, walHeader.databaseID);
         deserializer.getReader()->onObjectEnd();
-        validatedHeader = true;
+        // Additional identity admission belongs only to strict recovery. Lenient
+        // dry replay must still reach ordinary replay's identity check; swallowing
+        // a new early identity error would silently truncate a foreign WAL.
+        validatedHeader = matchedPersistedHeader;
 
         bool finishedDeserializing = deserializer.finished();
         while (!finishedDeserializing) {
@@ -222,12 +228,16 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
             }
             }
         }
-    } catch (const Exception& error) {
-        const auto message = std::string{error.what()};
-        if (throwOnWalReplayFailure && validatedHeader &&
-            (message == "Storage exception: " + std::string{checksumMismatchMessage} ||
-                message == "Runtime exception: Corrupted wal file. Read out invalid WAL record type.")) {
-            throw MalformedWalException(message);
+    } catch (const InvalidWalRecordTypeException& error) {
+        if (throwOnWalReplayFailure && validatedHeader) {
+            throw MalformedWalException(error.what());
+        }
+        if (throwOnWalReplayFailure) {
+            throw;
+        }
+    } catch (const WalChecksumMismatchException& error) {
+        if (throwOnWalReplayFailure && validatedHeader) {
+            throw MalformedWalException(error.what());
         }
         if (throwOnWalReplayFailure) {
             throw;

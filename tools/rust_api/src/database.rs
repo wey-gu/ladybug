@@ -249,32 +249,46 @@ impl Database {
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
             F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
         {
-            // Native construction never retains this Rust state or the borrowed
-            // capability. Option consumption also prevents a second invocation.
-            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, bool)) };
+            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, Option<Error>)) };
             let snapshot = WalRecoverySnapshot { native };
-            let success = state.0.take().is_some_and(|recover| {
+            let outcome = state.0.take().map(|recover| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recover(&snapshot)))
-                    .is_ok_and(|ok| ok)
             });
-            state.2 = !success;
-            success
+            match outcome {
+                Some(Ok(true)) => true,
+                Some(Err(_)) => {
+                    state.2 = Some(Error::MalformedWalRecoveryPanicked);
+                    false
+                }
+                _ => {
+                    state.2 = Some(Error::MalformedWalRecoveryFailed);
+                    false
+                }
+            }
         }
         fn validate<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> bool
         where
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
             F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
         {
-            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, bool)) };
+            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, Option<Error>)) };
             let snapshot = WalRecoverySnapshot { native };
-            let success = state.1.take().is_some_and(|admit| {
+            let outcome = state.1.take().map(|admit| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| admit(&snapshot)))
-                    .is_ok_and(|ok| ok)
             });
-            state.2 = !success;
-            success
+            match outcome {
+                Some(Ok(true)) => true,
+                Some(Err(_)) => {
+                    state.2 = Some(Error::WalAdmissionPanicked);
+                    false
+                }
+                _ => {
+                    state.2 = Some(Error::WalAdmissionFailed);
+                    false
+                }
+            }
         }
-        let mut callback = (Some(recover), Some(admit), false);
+        let mut callback = (Some(recover), Some(admit), None::<Error>);
         let db = ffi::new_database_with_malformed_wal_recovery(
             ffi::StringView::new(&path.as_ref().display().to_string()),
             config.buffer_pool_size,
@@ -294,8 +308,7 @@ impl Database {
             Ok(db) => Ok(Database {
                 db: UnsafeCell::new(db),
             }),
-            Err(_) if callback.2 => Err(Error::BeforeRecoveryFailed),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(callback.2.unwrap_or_else(|| error.into())),
         }
     }
 

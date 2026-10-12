@@ -99,6 +99,76 @@ mod startup_wal_recovery_tests {
     }
 
     #[test]
+    fn callback_failures_preserve_their_phase_and_panic_cause() {
+        for mode in 0..4 {
+            let (_directory, path) = seed();
+            damage(&path);
+            let before = std::fs::read(wal(&path)).unwrap();
+            let error = Database::new_with_wal_recovery_admission(
+                &path,
+                config(),
+                |_| match mode {
+                    0 => false,
+                    1 => panic!("synthetic admission panic"),
+                    _ => true,
+                },
+                |_| match mode {
+                    2 => false,
+                    3 => panic!("synthetic recovery panic"),
+                    _ => unreachable!(),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                match mode {
+                    0 => matches!(error, Error::WalAdmissionFailed),
+                    1 => matches!(error, Error::WalAdmissionPanicked),
+                    2 => matches!(error, Error::MalformedWalRecoveryFailed),
+                    _ => matches!(error, Error::MalformedWalRecoveryPanicked),
+                },
+                "{error}"
+            );
+            assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn missing_main_header_does_not_silently_skip_valid_wal_in_lenient_mode() {
+        let (_directory, path) = seed();
+        let before = std::fs::read(wal(&path)).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        let error = Database::new(&path, config().throw_on_wal_replay_failure(false)).unwrap_err();
+        assert!(!matches!(error, Error::MalformedWal(_)), "{error}");
+        assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
+    }
+
+    #[test]
+    fn lenient_foreign_wal_still_refuses_before_truncation() {
+        for read_only in [false, true] {
+            let (_directory, path) = seed();
+            let (_other, foreign) = seed();
+            let main_before = std::fs::read(&path).unwrap();
+            let foreign_wal = std::fs::read(wal(&foreign)).unwrap();
+            std::fs::write(wal(&path), &foreign_wal).unwrap();
+            let error = Database::new(
+                &path,
+                config()
+                    .throw_on_wal_replay_failure(false)
+                    .read_only(read_only),
+            )
+            .unwrap_err();
+            assert!(!matches!(error, Error::MalformedWal(_)), "{error}");
+            assert_eq!(std::fs::read(&path).unwrap(), main_before);
+            assert_eq!(std::fs::read(wal(&path)).unwrap(), foreign_wal);
+        }
+    }
+
+    #[test]
     fn valid_wal_replays_without_running_malformed_recovery() {
         let (_directory, path) = seed();
         let calls = Cell::new(0);
@@ -225,7 +295,7 @@ mod startup_wal_recovery_tests {
             false
         })
         .unwrap_err();
-        assert!(matches!(error, Error::BeforeRecoveryFailed));
+        assert!(matches!(error, Error::MalformedWalRecoveryFailed));
         assert_eq!(std::fs::read(moved).unwrap(), before);
         assert!(wal(&path).exists());
     }

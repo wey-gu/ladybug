@@ -64,11 +64,20 @@ int main() {
             "Missing FMA/F16C must not authorize kernels compiled with those instructions");
     }
     const auto without_popcnt = caps(all & ~(1u << 23), all, 0xe6);
+    require(without_popcnt == simsimd_cap_serial_k,
+        "Haswell binary kernels require POPCNT; all descendants must remain guarded");
     const auto without_lzcnt = _simsimd_capabilities_x86_from_registers(all, all, all, all, all, all & ~(1u << 5), 0xe6);
-    for (auto admitted : {without_popcnt, without_lzcnt}) {
-        require(!(admitted & (simsimd_cap_ice_k | simsimd_cap_turin_k)),
-            "Sparse kernel POPCNT/LZCNT requirements must be admitted");
-        require(admitted & simsimd_cap_skylake_k, "Missing sparse features must preserve safe Skylake kernels");
+    require(!(without_lzcnt & (simsimd_cap_ice_k | simsimd_cap_turin_k)),
+        "Sparse kernel LZCNT requirement must be admitted");
+    require(without_lzcnt & simsimd_cap_skylake_k,
+        "Missing sparse LZCNT must preserve safe Skylake kernels");
+    for (auto metric : {simsimd_metric_hamming_k, simsimd_metric_jaccard_k}) {
+        simsimd_kernel_punned_t binary = nullptr;
+        simsimd_capability_t selected = simsimd_cap_any_k;
+        simsimd_find_kernel_punned(metric, simsimd_datatype_b8_k, without_popcnt,
+            simsimd_cap_any_k, &binary, &selected);
+        require(binary != nullptr && selected == simsimd_cap_serial_k,
+            "Real binary selector must not choose POPCNT kernels when CPU masks POPCNT");
     }
     require(caps(all, all, 0xe6) != avx2, "Complete CPU/OS capabilities must retain AVX512");
 
