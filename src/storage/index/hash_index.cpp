@@ -677,17 +677,15 @@ void PrimaryKeyIndex::checkpoint(main::ClientContext*, storage::PageAllocator& p
             indexChanged = true;
         }
     }
+    // Assign both header pages under one condition: the constructor rejects an overflow
+    // header page without index header pages.
     if (indexChanged) {
         writeHeaders(pageAllocator);
         hashIndexDiskArrays->checkpoint(getDiskArrayFirstHeaderPage(), pageAllocator);
-    }
-    // Empty indexes, including a rolled-back first insert, have no primary
-    // header. Persisting only their overflow header would violate the paired
-    // header invariant checked when the index is reopened.
-    if (overflowFile &&
-        storageInfo->cast<PrimaryKeyIndexStorageInfo>().firstHeaderPage != INVALID_PAGE_IDX) {
-        overflowFile->checkpoint(pageAllocator);
-        updateOverflowHeaderPageIfNeeded(storageInfo.get(), overflowFile.get());
+        if (overflowFile) {
+            overflowFile->checkpoint(pageAllocator);
+            updateOverflowHeaderPageIfNeeded(storageInfo.get(), overflowFile.get());
+        }
     }
     // Make sure that changes which bypassed the WAL are written.
     // There is no other mechanism for enforcing that they are flushed

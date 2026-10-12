@@ -31,10 +31,24 @@ import sys
 from pathlib import Path
 path = Path(sys.argv[1])
 source = path.read_text()
-fixed = """if (overflowFile &&
-        storageInfo->cast<PrimaryKeyIndexStorageInfo>().firstHeaderPage != INVALID_PAGE_IDX) {"""
+fixed = """    if (indexChanged) {
+        writeHeaders(pageAllocator);
+        hashIndexDiskArrays->checkpoint(getDiskArrayFirstHeaderPage(), pageAllocator);
+        if (overflowFile) {
+            overflowFile->checkpoint(pageAllocator);
+            updateOverflowHeaderPageIfNeeded(storageInfo.get(), overflowFile.get());
+        }
+    }"""
+old = """    if (indexChanged) {
+        writeHeaders(pageAllocator);
+        hashIndexDiskArrays->checkpoint(getDiskArrayFirstHeaderPage(), pageAllocator);
+    }
+    if (overflowFile) {
+        overflowFile->checkpoint(pageAllocator);
+        updateOverflowHeaderPageIfNeeded(storageInfo.get(), overflowFile.get());
+    }"""
 assert source.count(fixed) == 1, "Expected exactly one paired-header guard"
-path.write_text(source.replace(fixed, "if (overflowFile) {"))
+path.write_text(source.replace(fixed, old))
 PYMUTANT
 cmake --build "$build_dir" --target e2e_test -j 8 > "$evidence/old-production-build.log" 2>&1
 set +e
