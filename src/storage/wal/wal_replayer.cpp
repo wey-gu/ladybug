@@ -1,4 +1,5 @@
 #include "storage/wal/wal_replayer.h"
+#include "storage/wal/malformed_wal.h"
 
 #include "binder/binder.h"
 #include "catalog/catalog_entry/scalar_macro_catalog_entry.h"
@@ -11,8 +12,10 @@
 #include "common/serializer/buffered_file.h"
 #include "extension/extension_manager.h"
 #include "main/client_context.h"
+#include "main/database.h"
 #include "processor/expression_mapper.h"
 #include "storage/file_db_id_utils.h"
+#include "storage/database_header.h"
 #include "storage/local_storage/local_rel_table.h"
 #include "storage/storage_manager.h"
 #include "storage/table/node_table.h"
@@ -108,8 +111,29 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
     try {
         // First, we dry run the replay to find out the offset of the last record that was
         // CHECKPOINT or COMMIT.
-        auto [offsetDeserialized, isLastRecordCheckpoint] =
-            dryReplay(*fileInfo, throwOnWalReplayFailure, enableChecksums);
+        WALReplayInfo replayInfo;
+        try {
+            replayInfo = dryReplay(*fileInfo, throwOnWalReplayFailure, enableChecksums);
+        } catch (const MalformedWalException&) {
+            // Windows cannot rename an open WAL. Dry replay and its reader have
+            // unwound; close this last handle before calling the evidence owner.
+            fileInfo.reset();
+            // A catchably invalid checkpoint cannot authorize WAL isolation.
+            // This loads checkpoint metadata without applying WAL/shadow pages.
+            checkpointer.readCheckpoint();
+            auto* main = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
+            if (!clientContext.getDatabase()->tryRecoverMalformedWal(*main)) {
+                throw;
+            }
+            // The owner must have retained evidence and isolated the active WAL.
+            // Never continue a stale reader, delete shadow evidence, or replay a
+            // partially decoded prefix after the bounded recovery decision.
+            if (vfs->fileOrPathExists(walPath, &clientContext)) {
+                throw RuntimeException("Malformed-WAL recovery left the active WAL present.");
+            }
+            return;
+        }
+        auto [offsetDeserialized, isLastRecordCheckpoint] = replayInfo;
         if (isLastRecordCheckpoint) {
             // If the last record is a checkpoint, we resume by replaying the shadow file.
             ShadowFile::replayShadowPageRecords(clientContext);
@@ -160,14 +184,22 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
     bool enableChecksums) const {
     uint64_t offsetDeserialized = 0;
     bool isLastRecordCheckpoint = false;
+    bool validatedHeader = false;
     try {
         Deserializer deserializer = initDeserializer(fileInfo, clientContext, enableChecksums);
 
-        // Skip the databaseID here, we'll verify it when we actually replay
+        // Verify identity before assigning any malformed-record authority.
         deserializer.getReader()->onObjectBegin();
         const auto walHeader = readWALHeader(deserializer);
         checkWALHeader(walHeader, enableChecksums);
+        auto* retainedMain = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
+        const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain);
+        if (!mainHeader) {
+            throw RuntimeException("WAL replay requires an existing database header.");
+        }
+        FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID, walHeader.databaseID);
         deserializer.getReader()->onObjectEnd();
+        validatedHeader = true;
 
         bool finishedDeserializing = deserializer.finished();
         while (!finishedDeserializing) {
@@ -189,6 +221,16 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
                 // DO NOTHING.
             }
             }
+        }
+    } catch (const Exception& error) {
+        const auto message = std::string{error.what()};
+        if (throwOnWalReplayFailure && validatedHeader &&
+            (message == "Storage exception: " + std::string{checksumMismatchMessage} ||
+                message == "Runtime exception: Corrupted wal file. Read out invalid WAL record type.")) {
+            throw MalformedWalException(message);
+        }
+        if (throwOnWalReplayFailure) {
+            throw;
         }
     } catch (...) {
         // If we hit an exception while deserializing, we assume that the WAL file is (partially)

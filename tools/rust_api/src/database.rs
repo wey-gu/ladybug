@@ -6,6 +6,35 @@ use std::path::Path;
 use crate::error::Error;
 use crate::ffi::ffi;
 
+/// Borrowed read-only access to the main file through its retained native lock.
+/// Available only inside a synchronous malformed-WAL recovery callback.
+pub struct WalRecoverySnapshot<'a> {
+    native: &'a ffi::WalRecoveryContext,
+}
+
+impl WalRecoverySnapshot<'_> {
+    /// Available bytes on the retained main file volume; failure is not zero.
+    pub fn available_space(&self) -> Result<u64, Error> {
+        Ok(self.native.available_space()?)
+    }
+
+    pub fn main_size(&self) -> u64 {
+        self.native.main_size()
+    }
+
+    pub fn main_identity(&self) -> Result<String, Error> {
+        self.native.main_identity().map_err(Error::from)
+    }
+
+    pub fn owns_named_main(&self) -> bool {
+        self.native.owns_named_main()
+    }
+
+    pub fn read_main(&self, offset: u64, buffer: &mut [u8]) -> Result<(), Error> {
+        self.native.read_main(offset, buffer).map_err(Error::from)
+    }
+}
+
 /// The Database class is the main class of `LbugDB`. It manages all database components.
 pub struct Database {
     pub(crate) db: UnsafeCell<UniquePtr<ffi::Database>>,
@@ -176,7 +205,7 @@ impl Database {
             config.throw_on_wal_replay_failure,
             config.enable_checksums,
             run::<F>,
-            &mut callback as *mut (Option<F>, bool) as usize,
+            std::ptr::addr_of_mut!(callback) as usize,
         );
         match db {
             Ok(db) => Ok(Database {
@@ -187,11 +216,100 @@ impl Database {
         }
     }
 
+    /// One bounded, synchronous recovery at the typed strict dry-replay boundary.
+    /// The WAL reader is closed, while the original main handle remains locked.
+    /// Returning true requires the caller to durably retain evidence and isolate
+    /// the active WAL; the engine then loads only the existing checkpoint.
+    pub fn new_with_malformed_wal_recovery<P, F>(
+        path: P,
+        config: SystemConfig,
+        recover: F,
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+        F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+    {
+        Self::new_with_wal_recovery_admission(path, config, |_| true, recover)
+    }
+
+    /// Validate pending recovery evidence under the native lock, before any WAL action.
+    pub fn new_with_wal_recovery_admission<P, A, F>(
+        path: P,
+        config: SystemConfig,
+        admit: A,
+        recover: F,
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+        A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+        F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+    {
+        fn run<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> bool
+        where
+            A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+            F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+        {
+            // Native construction never retains this Rust state or the borrowed
+            // capability. Option consumption also prevents a second invocation.
+            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, bool)) };
+            let snapshot = WalRecoverySnapshot { native };
+            let success = state.0.take().is_some_and(|recover| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recover(&snapshot)))
+                    .is_ok_and(|ok| ok)
+            });
+            state.2 = !success;
+            success
+        }
+        fn validate<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> bool
+        where
+            A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+            F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+        {
+            let state = unsafe { &mut *(context as *mut (Option<F>, Option<A>, bool)) };
+            let snapshot = WalRecoverySnapshot { native };
+            let success = state.1.take().is_some_and(|admit| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| admit(&snapshot)))
+                    .is_ok_and(|ok| ok)
+            });
+            state.2 = !success;
+            success
+        }
+        let mut callback = (Some(recover), Some(admit), false);
+        let db = ffi::new_database_with_malformed_wal_recovery(
+            ffi::StringView::new(&path.as_ref().display().to_string()),
+            config.buffer_pool_size,
+            config.max_num_threads,
+            config.enable_compression,
+            config.read_only,
+            config.max_db_size,
+            config.auto_checkpoint,
+            config.checkpoint_threshold,
+            config.throw_on_wal_replay_failure,
+            config.enable_checksums,
+            run::<A, F>,
+            validate::<A, F>,
+            std::ptr::addr_of_mut!(callback) as usize,
+        );
+        match db {
+            Ok(db) => Ok(Database {
+                db: UnsafeCell::new(db),
+            }),
+            Err(_) if callback.2 => Err(Error::BeforeRecoveryFailed),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Creates an in-memory database
     ///
     /// Alias for `Database::new(":memory:", config)`
     pub fn in_memory(config: SystemConfig) -> Result<Self, Error> {
         Self::new(IN_MEMORY_DB_NAME, config)
+    }
+
+    /// Validated persisted database identity. Exclusive Rust borrowing prevents
+    /// this header read from overlapping use through this owner.
+    pub fn identity(&mut self) -> Result<String, Error> {
+        ffi::database_identity(self.db.get_mut().pin_mut()).map_err(Error::from)
     }
 }
 

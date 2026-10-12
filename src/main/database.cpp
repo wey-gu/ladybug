@@ -98,6 +98,35 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     initMembers(databasePath, initBufferManager, beforeRecovery);
 }
 
+Database::Database(std::string_view databasePath, SystemConfig systemConfig,
+    const std::function<void()>& beforeRecovery,
+    std::function<bool(common::FileInfo&)> recovery,
+    std::function<bool(common::FileInfo&)> admitRecovery)
+    : dbConfig(systemConfig), malformedWalRecovery{std::move(recovery)} {
+    if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || databasePath.empty() ||
+        databasePath == ":memory:") {
+        throw RuntimeException("Malformed-WAL recovery requires strict writable persisted open.");
+    }
+    initMembers(databasePath, initBufferManager, [&]() {
+        if (beforeRecovery) beforeRecovery();
+        if (admitRecovery && !admitRecovery(*storageManager->getDataFH()->getFileInfo())) {
+            throw RuntimeException("Recovery admission callback failed.");
+        }
+    });
+    // The constructor-scoped caller and its borrowed context do not outlive init.
+    malformedWalRecovery = {};
+}
+
+bool Database::tryRecoverMalformedWal(common::FileInfo& retainedMain) {
+    if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || !malformedWalRecovery) {
+        return false;
+    }
+    // One attempt; a handler failure cannot be retried through this constructor.
+    auto handler = std::move(malformedWalRecovery);
+    malformedWalRecovery = {};
+    return handler(retainedMain);
+}
+
 std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
     return std::make_unique<BufferManager>(db.databasePath,
         StorageUtils::getTmpFilePath(db.databasePath), db.dbConfig.bufferPoolSize,

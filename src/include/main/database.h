@@ -112,6 +112,14 @@ public:
      * The callback must not access this partially initialized database or release its lock. */
     LBUG_API Database(std::string_view databasePath, SystemConfig systemConfig,
         const std::function<void()>& beforeRecovery);
+    /** Called only for typed malformed input during strict dry WAL replay.
+     * The supplied main handle retains the native exclusive lock. The handler
+     * may snapshot it but must never open another descriptor for that inode. */
+    LBUG_API Database(std::string_view databasePath, SystemConfig systemConfig,
+        const std::function<void()>& beforeRecovery,
+        std::function<bool(common::FileInfo&)> malformedWalRecovery,
+        std::function<bool(common::FileInfo&)> admitRecovery = {});
+    bool tryRecoverMalformedWal(common::FileInfo& retainedMain);
     /**
      * @brief Destructs the database object.
      */
@@ -197,6 +205,7 @@ private:
     std::unique_ptr<storage::StorageManager> storageManager;
     std::unique_ptr<transaction::TransactionManager> transactionManager;
     std::unique_ptr<common::FileInfo> lockFile;
+    std::function<bool(common::FileInfo&)> malformedWalRecovery;
     std::unique_ptr<DatabaseManager> databaseManager;
     std::unique_ptr<extension::ExtensionManager> extensionManager;
     QueryIDGenerator queryIDGenerator;

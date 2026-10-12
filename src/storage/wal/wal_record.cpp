@@ -76,7 +76,9 @@ std::unique_ptr<WALRecord> WALRecord::deserialize(Deserializer& deserializer,
         throw RuntimeException("Corrupted wal file. Read out invalid WAL record type.");
     }
     default: {
-        KU_UNREACHABLE;
+        // A persisted enum is untrusted input, not an internal invariant. Keep
+        // this catchable; dry replay owns the narrower recovery classification.
+        throw RuntimeException("Corrupted wal file. Read out invalid WAL record type.");
     }
     }
     walRecord->type = type;

@@ -19,7 +19,21 @@
 #include <lbug.hpp>
 #endif
 
+namespace lbug::common {
+struct FileInfo;
+}
+
 namespace lbug_rs {
+
+// Constructor-scoped capability; the native main FileInfo remains locked.
+struct WalRecoveryContext {
+    lbug::common::FileInfo& main;
+    uint64_t main_size() const;
+    uint64_t available_space() const;
+    rust::String main_identity() const;
+    bool owns_named_main() const;
+    void read_main(uint64_t offset, rust::Slice<uint8_t> buffer) const;
+};
 
 struct TypeListBuilder {
     std::vector<lbug::common::LogicalType> types;
@@ -104,7 +118,15 @@ std::unique_ptr<lbug::main::Database> new_database_with_recovery(std::string_vie
     bool throwOnWalReplayFailure, bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery,
     size_t context);
 
+std::unique_ptr<lbug::main::Database> new_database_with_malformed_wal_recovery(
+    std::string_view databasePath, uint64_t bufferPoolSize, uint64_t maxNumThreads,
+    bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
+    int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context);
+
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);
+rust::String database_identity(lbug::main::Database& database);
 
 /* Connection */
 std::unique_ptr<lbug::main::Connection> database_connect(lbug::main::Database& database);

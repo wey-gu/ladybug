@@ -1,5 +1,18 @@
 #include "lbug_rs.h"
 #include <stdexcept>
+#ifdef LBUG_BUNDLED
+#include "common/file_system/file_info.h"
+#include "common/file_system/local_file_system.h"
+#include "main/client_context.h"
+#include "storage/database_header.h"
+#include "storage/storage_manager.h"
+#endif
+#include <filesystem>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 using lbug::common::ArrayTypeInfo;
 using lbug::common::Interval;
@@ -119,6 +132,93 @@ std::unique_ptr<Database> new_database_with_recovery(std::string_view databasePa
             throw std::runtime_error("Before-recovery callback failed; WAL replay skipped.");
         }
     });
+}
+
+uint64_t WalRecoveryContext::main_size() const {
+    return main.getFileSize();
+}
+
+uint64_t WalRecoveryContext::available_space() const {
+    return std::filesystem::space(std::filesystem::u8path(main.path).parent_path()).available;
+}
+
+rust::String WalRecoveryContext::main_identity() const {
+    const auto header = lbug::storage::DatabaseHeader::readDatabaseHeader(main);
+    if (!header) throw std::runtime_error("Retained recovery main has no valid header.");
+    return lbug::common::UUID::toString(header->databaseID);
+}
+
+bool WalRecoveryContext::owns_named_main() const {
+    const auto* local = dynamic_cast<const lbug::common::LocalFileInfo*>(&main);
+    if (!local) return false;
+#ifdef _WIN32
+    BY_HANDLE_FILE_INFORMATION retained{}, named{};
+    auto handle = const_cast<void*>(local->handle);
+    if (!GetFileInformationByHandle(handle, &retained)) return false;
+    const auto name = std::filesystem::u8path(main.path);
+    auto probe = CreateFileW(name.c_str(), FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (probe == INVALID_HANDLE_VALUE) return false;
+    const bool ok = GetFileInformationByHandle(probe, &named);
+    CloseHandle(probe);
+    return ok && retained.nNumberOfLinks == 1 && named.nNumberOfLinks == 1 &&
+        !(named.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+        retained.dwVolumeSerialNumber == named.dwVolumeSerialNumber &&
+        retained.nFileIndexHigh == named.nFileIndexHigh &&
+        retained.nFileIndexLow == named.nFileIndexLow;
+#else
+    struct stat retained{}, named{};
+    return fstat(local->fd, &retained) == 0 && lstat(main.path.c_str(), &named) == 0 &&
+        S_ISREG(retained.st_mode) && S_ISREG(named.st_mode) && retained.st_nlink == 1 &&
+        named.st_nlink == 1 && retained.st_dev == named.st_dev && retained.st_ino == named.st_ino;
+#endif
+}
+
+rust::String database_identity(Database& database) {
+    lbug::main::ClientContext context(&database);
+    const auto* storage = lbug::storage::StorageManager::Get(context);
+    const WalRecoveryContext snapshot{*storage->getDataFH()->getFileInfo()};
+    return snapshot.main_identity();
+}
+
+void WalRecoveryContext::read_main(uint64_t offset, rust::Slice<uint8_t> buffer) const {
+    const auto size = main.getFileSize();
+    if (offset > size || buffer.size() > size - offset) {
+        throw std::runtime_error("Retained main snapshot read exceeds physical file extent.");
+    }
+    if (!buffer.empty()) {
+        main.readFromFile(buffer.data(), buffer.size(), offset);
+    }
+}
+
+std::unique_ptr<Database> new_database_with_malformed_wal_recovery(
+    std::string_view databasePath, uint64_t bufferPoolSize, uint64_t maxNumThreads,
+    bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
+    int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context) {
+    auto config = SystemConfig();
+    if (bufferPoolSize > 0) config.bufferPoolSize = bufferPoolSize;
+    if (maxNumThreads > 0) config.maxNumThreads = maxNumThreads;
+    config.enableCompression = enableCompression;
+    config.readOnly = readOnly;
+    if (maxDBSize != -1u) config.maxDBSize = maxDBSize;
+    config.autoCheckpoint = autoCheckpoint;
+    if (checkpointThreshold >= 0) config.checkpointThreshold = checkpointThreshold;
+    config.throwOnWalReplayFailure = throwOnWalReplayFailure;
+    config.enableChecksums = enableChecksums;
+    return std::make_unique<Database>(databasePath, config, std::function<void()>{},
+        [&](lbug::common::FileInfo& main) {
+            const WalRecoveryContext snapshot{main};
+            if (!recover(context, snapshot)) {
+                throw std::runtime_error("Malformed-WAL recovery evidence callback failed.");
+            }
+            return true;
+        }, [&](lbug::common::FileInfo& main) {
+            const WalRecoveryContext snapshot{main};
+            return admit(context, snapshot);
+        });
 }
 
 std::unique_ptr<lbug::main::Connection> database_connect(lbug::main::Database& database) {

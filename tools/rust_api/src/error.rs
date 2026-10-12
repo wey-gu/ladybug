@@ -4,6 +4,8 @@ use std::fmt;
 pub enum Error {
     /// Before-replay recovery failed; construction stops without WAL replay.
     BeforeRecoveryFailed,
+    /// Strict native dry replay rejected records after validating WAL identity.
+    MalformedWal(String),
     /// Exception raised by C++ lbug library
     CxxException(cxx::Exception),
     /// Message produced by lbug when a query fails
@@ -22,6 +24,7 @@ impl std::fmt::Display for Error {
             Error::BeforeRecoveryFailed => {
                 write!(f, "Before-recovery callback failed; WAL replay skipped.")
             }
+            Error::MalformedWal(message) => write!(f, "{message}"),
             Error::CxxException(cxx) => write!(f, "{cxx}"),
             Error::FailedQuery(message) => write!(f, "Query execution failed: {message}"),
             Error::FailedPreparedStatement(message) => {
@@ -53,7 +56,14 @@ impl std::error::Error for Error {
 
 impl From<cxx::Exception> for Error {
     fn from(item: cxx::Exception) -> Self {
-        Error::CxxException(item)
+        if item
+            .what()
+            .starts_with("Runtime exception: LBUG_MALFORMED_WAL_INPUT: ")
+        {
+            Error::MalformedWal(item.to_string())
+        } else {
+            Error::CxxException(item)
+        }
     }
 }
 

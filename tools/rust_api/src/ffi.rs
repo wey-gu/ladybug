@@ -1,7 +1,7 @@
 #[cfg(feature = "arrow")]
 pub(crate) mod arrow;
 
-use cxx::{type_id, ExternType};
+use cxx::{ExternType, type_id};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_void};
@@ -178,6 +178,31 @@ pub(crate) mod ffi {
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
             before_recovery: fn(usize) -> bool,
+            context: usize,
+        ) -> Result<UniquePtr<Database>>;
+
+        type WalRecoveryContext;
+        fn database_identity(database: Pin<&mut Database>) -> Result<String>;
+        fn main_size(self: &WalRecoveryContext) -> u64;
+        fn available_space(self: &WalRecoveryContext) -> Result<u64>;
+        fn main_identity(self: &WalRecoveryContext) -> Result<String>;
+        fn owns_named_main(self: &WalRecoveryContext) -> bool;
+        fn read_main(self: &WalRecoveryContext, offset: u64, buffer: &mut [u8]) -> Result<()>;
+
+        #[allow(clippy::fn_params_excessive_bools)]
+        fn new_database_with_malformed_wal_recovery(
+            databasePath: StringView,
+            bufferPoolSize: u64,
+            maxNumThreads: u64,
+            enableCompression: bool,
+            readOnly: bool,
+            maxDBSize: u64,
+            auto_checkpoint: bool,
+            checkpoint_threshold: i64,
+            throw_on_wal_replay_failure: bool,
+            enable_checksums: bool,
+            recover: fn(usize, &WalRecoveryContext) -> bool,
+            admit: fn(usize, &WalRecoveryContext) -> bool,
             context: usize,
         ) -> Result<UniquePtr<Database>>;
 
