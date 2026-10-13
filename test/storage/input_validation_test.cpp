@@ -3,27 +3,32 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 
 #if defined(_WIN32)
 #include <windows.h>
 #else
-#include <cerrno>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cerrno>
 #endif
 
+#include "common/exception/io.h"
 #include "common/exception/runtime.h"
+#include "common/file_system/local_file_system.h"
 #include "common/serializer/buffer_writer.h"
 #include "common/serializer/deserializer.h"
 #include "common/serializer/serializer.h"
 #include "common/type_utils.h"
 #include "common/vector/value_vector.h"
-#include "gtest/gtest.h"
 #include "gtest/gtest-spi.h"
+#include "gtest/gtest.h"
 #include "main/client_context.h"
 #include "main/connection.h"
 #include "main/database.h"
@@ -37,6 +42,7 @@
 #include "storage/page_manager.h"
 #include "storage/shadow_file.h"
 #include "storage/storage_manager.h"
+#include "storage/storage_utils.h"
 #include "storage/wal/wal.h"
 #include "storage/wal/wal_record.h"
 
@@ -57,8 +63,8 @@ bool independentWriterCanLock(const std::string& path) {
         return false;
     }
     OVERLAPPED overlapped = {};
-    const auto locked = LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-        0, 1, 0, &overlapped);
+    const auto locked = LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0,
+        1, 0, &overlapped);
     const auto error = GetLastError();
     EXPECT_TRUE(locked || error == ERROR_LOCK_VIOLATION);
     if (locked) {
@@ -78,7 +84,7 @@ bool independentWriterCanLock(const std::string& path) {
         if (fd < 0) {
             _exit(2);
         }
-        struct flock lock {};
+        struct flock lock{};
         lock.l_type = F_WRLCK;
         lock.l_whence = SEEK_SET;
         const auto rc = fcntl(fd, F_SETLK, &lock);
@@ -525,12 +531,10 @@ TEST_F(InputValidationTest, ShadowReplayRefreshesRetainedFilePageGroups) {
 
 TEST_F(InputValidationTest, IndependentLockProbeDoesNotAcceptUnknownAsBusy) {
 #if defined(_WIN32)
-    EXPECT_NONFATAL_FAILURE(
-        (void)independentWriterCanLock((directory / "missing.lbug").string()),
+    EXPECT_NONFATAL_FAILURE((void)independentWriterCanLock((directory / "missing.lbug").string()),
         "unexpected lock contender open failure");
 #else
-    EXPECT_NONFATAL_FAILURE(
-        (void)independentWriterCanLock((directory / "missing.lbug").string()),
+    EXPECT_NONFATAL_FAILURE((void)independentWriterCanLock((directory / "missing.lbug").string()),
         "unexpected lock contender exit code");
 #endif
 }
@@ -541,8 +545,8 @@ TEST_F(InputValidationTest, InterruptedCheckpointReopensWithRecoveredPageExtent)
         main::Connection connection{database.get()};
         ASSERT_TRUE(
             connection.query("CREATE NODE TABLE item(id INT64, PRIMARY KEY(id))")->isSuccess());
-        ASSERT_TRUE(connection.query("UNWIND range(0, 4999) AS id CREATE (:item {id: id})")
-                        ->isSuccess());
+        ASSERT_TRUE(
+            connection.query("UNWIND range(0, 4999) AS id CREATE (:item {id: id})")->isSuccess());
         InterruptedShadowCheckpointer interrupted{*connection.getClientContext()};
         ASSERT_THROW(interrupted.writeCheckpoint(), RuntimeException);
     }
@@ -562,14 +566,169 @@ TEST_F(InputValidationTest, InterruptedCheckpointReopensWithRecoveredPageExtent)
     EXPECT_TRUE(independentWriterCanLock(path));
     ASSERT_NO_THROW(database = std::make_unique<main::Database>(path, config));
     main::Connection connection{database.get()};
-    auto result = connection.query(
-        "MATCH (a:item) WHERE a.id IN [0, 4999, 5000] RETURN a.id ORDER BY a.id");
+    auto result =
+        connection.query("MATCH (a:item) WHERE a.id IN [0, 4999, 5000] RETURN a.id ORDER BY a.id");
     ASSERT_TRUE(result->isSuccess()) << result->getErrorMessage();
     for (const auto id : {int64_t{0}, int64_t{4999}, int64_t{5000}}) {
         ASSERT_TRUE(result->hasNext());
         EXPECT_EQ(result->getNext()->getValue(0)->getValue<int64_t>(), id);
     }
     EXPECT_FALSE(result->hasNext());
+}
+
+static std::string utf8Bytes(std::u8string_view value) {
+    return std::string(value.begin(), value.end());
+}
+
+static std::string nativePathBytes(const std::filesystem::path& path) {
+    const auto utf8 = path.u8string();
+    return std::string(utf8.begin(), utf8.end());
+}
+
+static std::string readNativeBytes(const std::filesystem::path& path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error("Cannot read native-path fixture");
+    }
+    return std::string(std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{});
+}
+
+TEST_F(InputValidationTest, UnicodeGraphPathPreservesCheckpointWalAndNativeLock) {
+    database.reset();
+    const auto root = directory / std::filesystem::path{u8"源目录-α-📚"};
+    ASSERT_TRUE(std::filesystem::create_directory(root));
+    const auto nativeMain = root / std::filesystem::path{u8"图谱.lbug"};
+    const auto path = nativePathBytes(nativeMain);
+    const auto normalized =
+        nativePathBytes(std::filesystem::absolute(nativeMain).lexically_normal());
+    EXPECT_EQ(StorageUtils::expandPath(nullptr, path), normalized);
+    ASSERT_NO_THROW(database = std::make_unique<main::Database>(path, config));
+    EXPECT_FALSE(independentWriterCanLock(path));
+    {
+        main::Connection connection{database.get()};
+        ASSERT_TRUE(
+            connection.query("CREATE NODE TABLE item(id INT64, content STRING, PRIMARY KEY(id))")
+                ->isSuccess());
+        ASSERT_TRUE(connection.query("CREATE (:item {id:42, content:'checkpoint'})")->isSuccess());
+        ASSERT_TRUE(connection.query("CHECKPOINT")->isSuccess());
+        ASSERT_TRUE(
+            connection.query("CREATE (:item {id:43, content:'committed WAL'})")->isSuccess());
+    }
+    database.reset();
+    ASSERT_TRUE(std::filesystem::is_regular_file(nativeMain));
+    auto nativeWal = nativeMain;
+    nativeWal += ".wal";
+    ASSERT_GT(std::filesystem::file_size(nativeWal), 0u);
+    EXPECT_TRUE(independentWriterCanLock(path));
+    ASSERT_NO_THROW(database = std::make_unique<main::Database>(path, config));
+    EXPECT_FALSE(independentWriterCanLock(path));
+    {
+        main::Connection connection{database.get()};
+        auto result = connection.query("MATCH (a:item) RETURN a.id,a.content ORDER BY a.id");
+        ASSERT_TRUE(result->isSuccess()) << result->getErrorMessage();
+        for (const auto& [id, content] : std::array<std::pair<int64_t, std::string>, 2>{
+                 std::pair<int64_t, std::string>{42, "checkpoint"}, {43, "committed WAL"}}) {
+            ASSERT_TRUE(result->hasNext());
+            auto row = result->getNext();
+            EXPECT_EQ(row->getValue(0)->getValue<int64_t>(), id);
+            EXPECT_EQ(row->getValue(1)->getValue<std::string>(), content);
+        }
+        EXPECT_FALSE(result->hasNext());
+        ASSERT_TRUE(connection.query("CHECKPOINT")->isSuccess());
+    }
+    database.reset();
+    EXPECT_TRUE(independentWriterCanLock(path));
+    config.readOnly = true;
+    ASSERT_NO_THROW(database = std::make_unique<main::Database>(path, config));
+}
+
+TEST_F(InputValidationTest, UnicodeLocalFilesPreserveNamesCopiesGlobsAndSidecarCleanup) {
+    const auto nativeRoot = directory / std::filesystem::path{u8"文件目录-α-📚"};
+    const auto root = nativePathBytes(nativeRoot);
+    const auto nativeMain = nativeRoot / std::filesystem::path{u8"图谱.lbug"};
+    const auto mainPath = nativePathBytes(nativeMain);
+    LocalFileSystem files{mainPath};
+    ASSERT_NO_THROW(files.createDir(root));
+    ASSERT_TRUE(std::filesystem::is_directory(nativeRoot));
+    ASSERT_NO_THROW({
+        auto writer = files.openFile(mainPath,
+            FileOpenFlags{FileFlags::WRITE | FileFlags::CREATE_IF_NOT_EXISTS});
+        const std::string body = "retained-native-bytes";
+        writer->writeFile(reinterpret_cast<const uint8_t*>(body.data()), body.size(), 0);
+        writer->syncFile();
+    });
+    EXPECT_TRUE(files.fileOrPathExists(mainPath));
+    EXPECT_TRUE(LocalFileSystem::fileExists(mainPath));
+    EXPECT_EQ(readNativeBytes(nativeMain), "retained-native-bytes");
+    EXPECT_EQ(FileSystem::getFileName(nativeMain), utf8Bytes(u8"图谱.lbug"));
+    EXPECT_EQ(files.glob(nullptr, root + "/" + utf8Bytes(u8"图*.lbug")),
+        std::vector<std::string>{mainPath});
+    auto nativeShadow = nativeMain;
+    nativeShadow += ".shadow";
+    const auto shadowPath = nativePathBytes(nativeShadow);
+    ASSERT_NO_THROW(files.copyFile(mainPath, shadowPath));
+    EXPECT_EQ(readNativeBytes(nativeShadow), "retained-native-bytes");
+    EXPECT_THROW(files.copyFile(mainPath, shadowPath), IOException);
+    EXPECT_EQ(readNativeBytes(nativeShadow), "retained-native-bytes");
+    auto nativeWal = nativeMain;
+    nativeWal += ".wal";
+    const auto walPath = nativePathBytes(nativeWal);
+    ASSERT_NO_THROW({
+        auto writer = files.openFile(walPath,
+            FileOpenFlags{FileFlags::WRITE | FileFlags::CREATE_IF_NOT_EXISTS});
+        const std::string body = "old-sidecar";
+        writer->writeFile(reinterpret_cast<const uint8_t*>(body.data()), body.size(), 0);
+        writer->syncFile();
+    });
+    ASSERT_NO_THROW(files.overwriteFile(shadowPath, walPath));
+    EXPECT_EQ(readNativeBytes(nativeWal), "retained-native-bytes");
+    EXPECT_THROW(files.removeFileIfExists(mainPath), IOException);
+    EXPECT_EQ(readNativeBytes(nativeMain), "retained-native-bytes");
+    ASSERT_NO_THROW(files.removeFileIfExists(shadowPath));
+    ASSERT_NO_THROW(files.removeFileIfExists(walPath));
+    EXPECT_FALSE(std::filesystem::exists(nativeShadow));
+    EXPECT_FALSE(std::filesystem::exists(nativeWal));
+    EXPECT_TRUE(std::filesystem::is_regular_file(nativeMain));
+}
+
+#if defined(__linux__)
+TEST_F(InputValidationTest, NativePosixPathRetainsNonUtf8FilenameBytes) {
+    std::string leaf = "native-";
+    leaf.push_back(static_cast<char>(0xff));
+    leaf += ".lbug";
+    const auto nativeMain = directory / leaf;
+    const auto path = nativeMain.string();
+    LocalFileSystem files{path};
+    ASSERT_NO_THROW({
+        auto writer =
+            files.openFile(path, FileOpenFlags{FileFlags::WRITE | FileFlags::CREATE_IF_NOT_EXISTS});
+        const std::string body = "native-posix-bytes";
+        writer->writeFile(reinterpret_cast<const uint8_t*>(body.data()), body.size(), 0);
+        writer->syncFile();
+    });
+    EXPECT_TRUE(files.fileOrPathExists(path));
+    EXPECT_EQ(FileSystem::getFileName(nativeMain), leaf);
+    EXPECT_EQ(readNativeBytes(nativeMain), "native-posix-bytes");
+}
+#endif
+
+TEST_F(InputValidationTest, NativePathBoundaryRejectsNulAndInvalidUtf8BeforeEffects) {
+    const auto original = directory / "graph.lbug";
+    const auto path = nativePathBytes(original);
+    const auto before = readNativeBytes(original);
+    LocalFileSystem files{path};
+    const auto withNul = path + std::string(1, '\0') + "ignored-suffix";
+    EXPECT_THROW(files.fileOrPathExists(withNul), IOException);
+    EXPECT_THROW(files.openFile(withNul, FileOpenFlags{FileFlags::WRITE}), IOException);
+    EXPECT_EQ(readNativeBytes(original), before);
+#if defined(_WIN32)
+    const auto invalid = path + std::string("\xc3\x28", 2);
+    EXPECT_THROW(files.fileOrPathExists(invalid), IOException);
+    EXPECT_THROW(
+        files.openFile(invalid, FileOpenFlags{FileFlags::WRITE | FileFlags::CREATE_IF_NOT_EXISTS}),
+        IOException);
+    EXPECT_EQ(readNativeBytes(original), before);
+#endif
 }
 
 } // namespace

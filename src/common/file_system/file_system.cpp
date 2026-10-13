@@ -1,6 +1,10 @@
 #include "common/file_system/file_system.h"
 
+#include "common/exception/io.h"
 #include "common/string_utils.h"
+#if defined(_WIN32)
+#include "common/windows_utils.h"
+#endif
 
 namespace lbug {
 namespace common {
@@ -30,6 +34,28 @@ std::string FileSystem::expandPath(main::ClientContext* /*context*/,
     return path;
 }
 
+std::filesystem::path FileSystem::pathFromUtf8(const std::string& path) {
+    if (path.find('\0') != std::string::npos) {
+        throw IOException("Filesystem path contains an embedded NUL");
+    }
+#if defined(_WIN32)
+    return std::filesystem::path{WindowsUtils::utf8ToUnicode(path.c_str())};
+#else
+    return std::filesystem::path{path};
+#endif
+}
+
+std::string FileSystem::pathToUtf8(const std::filesystem::path& path) {
+#if defined(_WIN32)
+    if (path.native().find(L'\0') != std::wstring::npos) {
+        throw IOException("Filesystem path contains an embedded NUL");
+    }
+    return WindowsUtils::unicodeToUTF8(path.c_str());
+#else
+    return path.string();
+#endif
+}
+
 std::string FileSystem::joinPath(const std::string& base, const std::string& part) {
     return base + "/" + part;
 }
@@ -39,7 +65,7 @@ std::string FileSystem::getFileExtension(const std::filesystem::path& path) {
     if (isCompressedFile(path)) {
         extension = path.stem().extension();
     }
-    return extension.string();
+    return pathToUtf8(extension);
 }
 
 bool FileSystem::isCompressedFile(const std::filesystem::path& path) {
@@ -47,7 +73,7 @@ bool FileSystem::isCompressedFile(const std::filesystem::path& path) {
 }
 
 std::string FileSystem::getFileName(const std::filesystem::path& path) {
-    return path.filename().string();
+    return pathToUtf8(path.filename());
 }
 
 void FileSystem::writeFile(FileInfo& /*fileInfo*/, const uint8_t* /*buffer*/, uint64_t /*numBytes*/,
@@ -64,7 +90,7 @@ void FileSystem::reset(FileInfo& fileInfo) {
 }
 
 bool FileSystem::isGZIPCompressed(const std::filesystem::path& path) {
-    auto extensionLowerCase = StringUtils::getLower(path.extension().string());
+    auto extensionLowerCase = StringUtils::getLower(pathToUtf8(path.extension()));
     return extensionLowerCase == ".gz" || extensionLowerCase == ".gzip";
 }
 

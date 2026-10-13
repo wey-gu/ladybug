@@ -61,6 +61,7 @@ static void validateFileFlags(uint8_t flags) {
 std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, FileOpenFlags flags,
     main::ClientContext* context) {
     auto fullPath = expandPath(context, path);
+    const auto nativePath = pathFromUtf8(fullPath);
     auto fileFlags = flags.flags;
     validateFileFlags(fileFlags);
 
@@ -109,7 +110,7 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
         dwDesiredAccess |= _O_BINARY;
     }
 
-    HANDLE handle = CreateFileA(fullPath.c_str(), dwDesiredAccess, dwShareMode, nullptr,
+    HANDLE handle = CreateFileW(nativePath.c_str(), dwDesiredAccess, dwShareMode, nullptr,
         dwCreationDisposition, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         throw IOException(stringFormat("Cannot open file. path: {} - Error {}: {}", fullPath,
@@ -127,8 +128,9 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
             const auto lockError = GetLastError();
             CloseHandle(handle);
             if (lockError != ERROR_LOCK_VIOLATION) {
-                throw IOException(stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
-                    fullPath, lockError, std::system_category().message(lockError)));
+                throw IOException(
+                    stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
+                        fullPath, lockError, std::system_category().message(lockError)));
             }
             throw IOException(
                 "Could not set lock on file : " + fullPath + "\n" +
@@ -137,12 +139,12 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
     }
     return std::make_unique<LocalFileInfo>(fullPath, handle, this);
 #else
-    int fd = open(fullPath.c_str(), openFlags, 0644);
+    int fd = open(nativePath.c_str(), openFlags, 0644);
     if (fd == -1) {
         throw IOException(stringFormat("Cannot open file {}: {}", fullPath, posixErrMessage()));
     }
     if (flags.lockType != FileLockType::NO_LOCK) {
-        struct flock fl {};
+        struct flock fl{};
         memset(&fl, 0, sizeof fl);
         fl.l_type = flags.lockType == FileLockType::READ_LOCK ? F_RDLCK : F_WRLCK;
         fl.l_whence = SEEK_SET;
@@ -153,8 +155,9 @@ std::unique_ptr<FileInfo> LocalFileSystem::openFile(const std::string& path, Fil
             const auto lockError = errno;
             close(fd);
             if (lockError != EACCES && lockError != EAGAIN) {
-                throw IOException(stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
-                    fullPath, lockError, std::generic_category().message(lockError)));
+                throw IOException(
+                    stringFormat("Cannot apply database file lock. path: {} - Error {}: {}",
+                        fullPath, lockError, std::generic_category().message(lockError)));
             }
             throw IOException(
                 "Could not set lock on file : " + fullPath + "\n" +
@@ -170,8 +173,11 @@ std::vector<std::string> LocalFileSystem::glob(main::ClientContext* context,
     if (path.empty()) {
         return std::vector<std::string>();
     }
+    // Validate the public UTF-8 boundary before the glob parser sees a path.
+    const auto nativePattern = pathFromUtf8(path);
     std::vector<std::string> pathsToGlob;
-    if (path[0] == '/' || (std::isalpha(path[0]) && path[1] == ':')) {
+    if (nativePattern.is_absolute() || path[0] == '/' ||
+        (path.size() > 1 && std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':')) {
         // Note:
         // Unix absolute path starts with '/'
         // Windows absolute path starts with "[DiskID]://"
@@ -200,7 +206,7 @@ std::vector<std::string> LocalFileSystem::glob(main::ClientContext* context,
     std::vector<std::string> result;
     for (auto& pathToGlob : pathsToGlob) {
         for (auto& resultPath : glob::glob(pathToGlob)) {
-            result.emplace_back(resultPath.string());
+            result.emplace_back(pathToUtf8(resultPath));
         }
     }
     return result;
@@ -211,8 +217,8 @@ void LocalFileSystem::overwriteFile(const std::string& from, const std::string& 
         return;
     }
     std::error_code errorCode;
-    if (!std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing,
-            errorCode)) {
+    if (!std::filesystem::copy_file(pathFromUtf8(from), pathFromUtf8(to),
+            std::filesystem::copy_options::overwrite_existing, errorCode)) {
         // LCOV_EXCL_START
         throw IOException(stringFormat("Error copying file {} to {}.  ErrorMessage: {}", from, to,
             errorCode.message()));
@@ -225,7 +231,8 @@ void LocalFileSystem::copyFile(const std::string& from, const std::string& to) {
         return;
     }
     std::error_code errorCode;
-    if (!std::filesystem::copy_file(from, to, std::filesystem::copy_options::none, errorCode)) {
+    if (!std::filesystem::copy_file(pathFromUtf8(from), pathFromUtf8(to),
+            std::filesystem::copy_options::none, errorCode)) {
         // LCOV_EXCL_START
         throw IOException(stringFormat("Error copying file {} to {}.  ErrorMessage: {}", from, to,
             errorCode.message()));
@@ -235,7 +242,7 @@ void LocalFileSystem::copyFile(const std::string& from, const std::string& to) {
 
 void LocalFileSystem::createDir(const std::string& dir) const {
     try {
-        if (std::filesystem::exists(dir)) {
+        if (std::filesystem::exists(pathFromUtf8(dir))) {
             // LCOV_EXCL_START
             throw IOException(stringFormat("Directory {} already exists.", dir));
             // LCOV_EXCL_STOP
@@ -252,7 +259,7 @@ void LocalFileSystem::createDir(const std::string& dir) const {
             directoryToCreate = directoryToCreate.substr(0, directoryToCreate.size() - 1);
         }
         std::error_code errCode;
-        if (!std::filesystem::create_directories(directoryToCreate, errCode)) {
+        if (!std::filesystem::create_directories(pathFromUtf8(directoryToCreate), errCode)) {
             // LCOV_EXCL_START
             throw IOException(
                 stringFormat("Directory {} cannot be created. Check if it exists and remove it.",
@@ -285,7 +292,8 @@ static bool isExtensionFile(const main::ClientContext* context, const std::strin
         return false;
     }
     auto extensionDir = context->getExtensionDir();
-    std::filesystem::path rel = std::filesystem::relative(path, extensionDir);
+    std::filesystem::path rel = std::filesystem::relative(FileSystem::pathFromUtf8(path),
+        FileSystem::pathFromUtf8(extensionDir));
     for (const auto& part : rel) {
         if (part == "..") {
             return false;
@@ -305,10 +313,10 @@ void LocalFileSystem::removeFileIfExists(const std::string& path,
     }
     std::error_code errCode;
     bool success = false;
-    if (std::filesystem::is_directory(path)) {
-        success = std::filesystem::remove_all(path, errCode);
+    if (std::filesystem::is_directory(pathFromUtf8(path))) {
+        success = std::filesystem::remove_all(pathFromUtf8(path), errCode);
     } else {
-        success = std::filesystem::remove(path, errCode);
+        success = std::filesystem::remove(pathFromUtf8(path), errCode);
     }
     if (!success) {
         // LCOV_EXCL_START
@@ -319,15 +327,16 @@ void LocalFileSystem::removeFileIfExists(const std::string& path,
 }
 
 bool LocalFileSystem::fileOrPathExists(const std::string& path, main::ClientContext* /*context*/) {
-    return std::filesystem::exists(path);
+    return std::filesystem::exists(pathFromUtf8(path));
 }
 
 #ifndef _WIN32
 bool LocalFileSystem::fileExists(const std::string& filename) {
+    const auto nativePath = pathFromUtf8(filename);
     if (!filename.empty()) {
-        if (access(filename.c_str(), 0) == 0) {
+        if (access(nativePath.c_str(), 0) == 0) {
             struct stat status = {};
-            stat(filename.c_str(), &status);
+            stat(nativePath.c_str(), &status);
             if (S_ISREG(status.st_mode)) {
                 return true;
             }
@@ -338,8 +347,8 @@ bool LocalFileSystem::fileExists(const std::string& filename) {
 }
 #else
 bool LocalFileSystem::fileExists(const std::string& filename) {
-    auto unicode_path = WindowsUtils::utf8ToUnicode(filename.c_str());
-    const wchar_t* wpath = unicode_path.c_str();
+    const auto nativePath = pathFromUtf8(filename);
+    const wchar_t* wpath = nativePath.c_str();
     if (_waccess(wpath, 0) == 0) {
         struct _stati64 status = {};
         _wstati64(wpath, &status);
@@ -552,7 +561,7 @@ uint64_t LocalFileSystem::getFileSize(const FileInfo& fileInfo) const {
     }
     return size.QuadPart;
 #else
-    struct stat s {};
+    struct stat s{};
     if (fstat(localFileInfo->fd, &s) == -1) {
         throw IOException(stringFormat("Cannot read size of file. path: {} - Error {}: {}",
             fileInfo.path, errno, posixErrMessage()));

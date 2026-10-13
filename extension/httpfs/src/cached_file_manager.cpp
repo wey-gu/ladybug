@@ -28,7 +28,7 @@ std::unique_ptr<FileInfo> CachedFileManager::getCachedFileInfo(HTTPFileInfo* htt
     if (!vfs->fileOrPathExists(cachePathForTrx)) {
         vfs->createDir(cachePathForTrx);
     }
-    auto fileName = FileSystem::getFileName(httpFileInfo->path);
+    auto fileName = FileSystem::getFileName(FileSystem::pathFromUtf8(httpFileInfo->path));
     auto cacheFilePath = getCachedFilePath(fileName, transactionID);
     if (!vfs->fileOrPathExists(cacheFilePath)) {
         auto cacheFileInfo =

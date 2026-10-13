@@ -99,8 +99,7 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
 }
 
 Database::Database(std::string_view databasePath, SystemConfig systemConfig,
-    const std::function<void()>& beforeRecovery,
-    std::function<bool(common::FileInfo&)> recovery,
+    const std::function<void()>& beforeRecovery, std::function<bool(common::FileInfo&)> recovery,
     std::function<bool(common::FileInfo&)> admitRecovery)
     : dbConfig(systemConfig), malformedWalRecovery{std::move(recovery)} {
     if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || databasePath.empty() ||
@@ -108,7 +107,8 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
         throw RuntimeException("Malformed-WAL recovery requires strict writable persisted open.");
     }
     initMembers(databasePath, initBufferManager, [&]() {
-        if (beforeRecovery) beforeRecovery();
+        if (beforeRecovery)
+            beforeRecovery();
         if (admitRecovery && !admitRecovery(*storageManager->getDataFH()->getFileInfo())) {
             throw RuntimeException("Recovery admission callback failed.");
         }
@@ -145,7 +145,7 @@ void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFu
     auto clientContext = ClientContext(this);
     databasePath = StorageUtils::expandPath(&clientContext, dbPathStr);
 
-    if (std::filesystem::is_directory(databasePath)) {
+    if (std::filesystem::is_directory(FileSystem::pathFromUtf8(databasePath))) {
         throw RuntimeException("Database path cannot be a directory: " + databasePath);
     }
     vfs = std::make_unique<VirtualFileSystem>(databasePath);

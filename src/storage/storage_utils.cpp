@@ -2,6 +2,7 @@
 
 #include <filesystem>
 
+#include "common/file_system/file_system.h"
 #include "common/null_buffer.h"
 #include "common/string_format.h"
 #include "common/types/ku_list.h"
@@ -61,8 +62,9 @@ std::string StorageUtils::expandPath(const main::ClientContext* context, const s
             fullPath.substr(1);
     }
     // Normalize the path to resolve '.' and '..'
-    std::filesystem::path normalizedPath = std::filesystem::absolute(fullPath).lexically_normal();
-    return normalizedPath.string();
+    std::filesystem::path normalizedPath =
+        std::filesystem::absolute(FileSystem::pathFromUtf8(fullPath)).lexically_normal();
+    return FileSystem::pathToUtf8(normalizedPath);
 }
 
 uint32_t StorageUtils::getDataTypeSize(const LogicalType& type) {

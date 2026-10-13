@@ -78,6 +78,12 @@ public:
 
     static std::string joinPath(const std::string& base, const std::string& part);
 
+    // Engine paths are UTF-8 on Windows; filesystem::path is natively UTF-16.
+    // POSIX paths retain their native byte representation.
+    static std::filesystem::path pathFromUtf8(const std::string& path);
+
+    static std::string pathToUtf8(const std::filesystem::path& path);
+
     static std::string getFileExtension(const std::filesystem::path& path);
 
     static bool isCompressedFile(const std::filesystem::path& path);
