@@ -242,6 +242,13 @@ fs::path expand_tilde(fs::path path) {
 static inline 
 bool has_magic(const std::string &pathname) {
   static const auto magic_check = RE2("([*?[])");
+#ifdef _WIN32
+  // The extended-length namespace delimiter is literal. Treating its '?' as
+  // a wildcard sends canonical paths through glob recursion at the root.
+  if (pathname.rfind(R"(\\?\)", 0) == 0 || pathname.rfind("//?/", 0) == 0) {
+    return RE2::PartialMatch(pathname.substr(4), magic_check);
+  }
+#endif
   return RE2::PartialMatch(pathname, magic_check);
 }
 
