@@ -25,7 +25,7 @@ void VirtualFileSystem::registerFileSystem(std::unique_ptr<FileSystem> fileSyste
 }
 
 FileCompressionType VirtualFileSystem::autoDetectCompressionType(const std::string& path) {
-    if (isGZIPCompressed(path)) {
+    if (isGZIPCompressed(pathFromUtf8(path))) {
         return FileCompressionType::GZIP;
     }
     return FileCompressionType::UNCOMPRESSED;
@@ -44,7 +44,7 @@ std::unique_ptr<FileInfo> VirtualFileSystem::openFile(const std::string& path, F
     if (flags.flags & FileFlags::WRITE) {
         throw IOException{"Writing to compressed files is not supported yet."};
     }
-    if (StringUtils::getLower(getFileExtension(path)) != ".csv") {
+    if (StringUtils::getLower(getFileExtension(pathFromUtf8(path))) != ".csv") {
         throw IOException{"Lbug currently only supports reading from compressed csv files."};
     }
     return compressedFileSystem.at(compressionType)->openCompressedFile(std::move(fileHandle));
