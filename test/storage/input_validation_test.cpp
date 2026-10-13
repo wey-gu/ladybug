@@ -663,6 +663,17 @@ TEST_F(InputValidationTest, UnicodeLocalFilesPreserveNamesCopiesGlobsAndSidecarC
     EXPECT_EQ(FileSystem::getFileName(nativeMain), utf8Bytes(u8"图谱.lbug"));
     EXPECT_EQ(files.glob(nullptr, root + "/" + utf8Bytes(u8"图*.lbug")),
         std::vector<std::string>{mainPath});
+#if defined(_WIN32)
+    // Rust canonicalize supplies the extended-length namespace prefix. Its
+    // question mark is a namespace delimiter, not a filename wildcard.
+    const auto absoluteRoot = std::filesystem::absolute(nativeRoot).lexically_normal();
+    const auto extendedRoot = std::string{R"(\\?\)"} + nativePathBytes(absoluteRoot);
+    const auto extendedMain = extendedRoot + "\\" + utf8Bytes(u8"图谱.lbug");
+    EXPECT_TRUE(files.fileOrPathExists(extendedMain));
+    EXPECT_EQ(files.glob(nullptr, extendedMain), std::vector<std::string>{extendedMain});
+    EXPECT_EQ(files.glob(nullptr, extendedRoot + "\\" + utf8Bytes(u8"图*.lbug")),
+        std::vector<std::string>{extendedMain});
+#endif
     auto nativeShadow = nativeMain;
     nativeShadow += ".shadow";
     const auto shadowPath = nativePathBytes(nativeShadow);
