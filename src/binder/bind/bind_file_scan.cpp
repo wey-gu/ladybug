@@ -26,7 +26,7 @@ namespace lbug {
 namespace binder {
 
 FileTypeInfo bindSingleFileType(const main::ClientContext* context, const std::string& filePath) {
-    std::filesystem::path fileName(filePath);
+    const auto fileName = FileSystem::pathFromUtf8(filePath);
     auto extension = VirtualFileSystem::GetUnsafe(*context)->getFileExtension(fileName);
     return FileTypeInfo{FileTypeUtils::getFileTypeFromExtension(extension),
         extension.substr(std::min<uint64_t>(1, extension.length()))};
