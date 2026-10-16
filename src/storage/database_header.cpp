@@ -13,13 +13,13 @@
 #include "storage/storage_version_info.h"
 
 namespace lbug::storage {
-static void validateStorageVersion(common::Deserializer& deSer) {
+static void validateStorageVersion(common::Deserializer& deSer, bool legacyKuzu) {
     std::string key;
     deSer.validateDebuggingInfo(key, "storage_version");
     storage_version_t savedStorageVersion = 0;
     deSer.deserializeValue(savedStorageVersion);
     const auto storageVersion = StorageVersionInfo::getStorageVersion();
-    if (savedStorageVersion != storageVersion) {
+    if (savedStorageVersion != storageVersion || (legacyKuzu && savedStorageVersion != 39)) {
         // TODO(Guodong): Add a test case for this.
         throw common::RuntimeException(
             common::stringFormat("Trying to read a database file with a different version. "
@@ -28,7 +28,7 @@ static void validateStorageVersion(common::Deserializer& deSer) {
     }
 }
 
-static void validateMagicBytes(common::Deserializer& deSer) {
+static bool validateMagicBytes(common::Deserializer& deSer, bool allowLegacyKuzuReadOnly) {
     std::string key;
     deSer.validateDebuggingInfo(key, "magic");
     const auto numMagicBytes = strlen(StorageVersionInfo::MAGIC_BYTES);
@@ -36,10 +36,14 @@ static void validateMagicBytes(common::Deserializer& deSer) {
     for (auto i = 0u; i < numMagicBytes; i++) {
         deSer.deserializeValue<uint8_t>(magicBytes[i]);
     }
-    if (memcmp(magicBytes, StorageVersionInfo::MAGIC_BYTES, numMagicBytes) != 0) {
-        throw common::RuntimeException(
-            "Unable to open database. The file is not a valid Lbug database file!");
+    if (memcmp(magicBytes, StorageVersionInfo::MAGIC_BYTES, numMagicBytes) == 0) {
+        return false;
     }
+    if (allowLegacyKuzuReadOnly && memcmp(magicBytes, "KUZU", sizeof(magicBytes)) == 0) {
+        return true;
+    }
+    throw common::RuntimeException(
+        "Unable to open database. The file is not a valid Lbug database file!");
 }
 
 void DatabaseHeader::updateCatalogPageRange(PageManager& pageManager, PageRange newPageRange) {
@@ -77,9 +81,10 @@ void DatabaseHeader::serialize(common::Serializer& ser) const {
     ser.serializeValue(databaseID.value);
 }
 
-DatabaseHeader DatabaseHeader::deserialize(common::Deserializer& deSer) {
-    validateMagicBytes(deSer);
-    validateStorageVersion(deSer);
+DatabaseHeader DatabaseHeader::deserialize(common::Deserializer& deSer,
+    bool allowLegacyKuzuReadOnly) {
+    const auto legacyKuzu = validateMagicBytes(deSer, allowLegacyKuzuReadOnly);
+    validateStorageVersion(deSer, legacyKuzu);
     PageRange catalogPageRange{}, metaPageRange{};
     common::ku_uuid_t databaseID{};
     std::string key;
@@ -99,7 +104,8 @@ DatabaseHeader DatabaseHeader::createInitialHeader(common::RandomEngine* randomE
     return DatabaseHeader{{}, {}, common::UUID::generateRandomUUID(randomEngine)};
 }
 
-std::optional<DatabaseHeader> DatabaseHeader::readDatabaseHeader(common::FileInfo& dataFileInfo) {
+std::optional<DatabaseHeader> DatabaseHeader::readDatabaseHeader(common::FileInfo& dataFileInfo,
+    bool allowLegacyKuzuReadOnly) {
     if (dataFileInfo.getFileSize() < common::LBUG_PAGE_SIZE) {
         // If the data file hasn't been written to there is no existing database header
         return std::nullopt;
@@ -107,7 +113,7 @@ std::optional<DatabaseHeader> DatabaseHeader::readDatabaseHeader(common::FileInf
     auto reader = std::make_unique<common::BufferedFileReader>(dataFileInfo);
     common::Deserializer deSer(std::move(reader));
     try {
-        return DatabaseHeader::deserialize(deSer);
+        return DatabaseHeader::deserialize(deSer, allowLegacyKuzuReadOnly);
     } catch (const common::RuntimeException&) {
         // It is possible we optimistically write to the database file before the first checkpoint
         // In this case the magic bytes check will fail and we assume there is no existing header

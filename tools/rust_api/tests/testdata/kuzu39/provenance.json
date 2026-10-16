@@ -1,0 +1,31 @@
+{
+  "writer_version": "0.11.0",
+  "python": "3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]",
+  "platform": "win32",
+  "node_count_clean": 260,
+  "edge_count_clean": 518,
+  "node_count_wal": 261,
+  "edge_count_wal": 519,
+  "files": {
+    "clean.db": {
+      "size": 5681152,
+      "sha256": "fd04b7aa7c91a6d43ff5f084f483707f387ea02d6c52de5d6e27ac3d4be65ac9"
+    },
+    "clean.db.lock": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wal.db": {
+      "size": 5681152,
+      "sha256": "7550cdcdf909cb21f94162e90efc980a7e3347a6c53a28026eb8f3486c66d3bc"
+    },
+    "wal.db.lock": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wal.db.wal": {
+      "size": 449,
+      "sha256": "c585b87c8f797920cdb928433ee6c71885756611725bdc9ba91cd6ca10d2ace7"
+    }
+  }
+}

@@ -12,6 +12,7 @@
 #include "extension/extension_manager.h"
 #include "main/client_context.h"
 #include "main/database.h"
+#include "main/db_config.h"
 #include "processor/expression_mapper.h"
 #include "storage/database_header.h"
 #include "storage/file_db_id_utils.h"
@@ -211,7 +212,8 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
         bool matchedPersistedHeader = false;
         if (throwOnWalReplayFailure) {
             auto* retainedMain = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
-            const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain);
+            const auto mainHeader = DatabaseHeader::readDatabaseHeader(*retainedMain,
+                clientContext.getDBConfig()->allowLegacyKuzuReadOnly);
             if (mainHeader) {
                 FileDBIDUtils::verifyDatabaseID(fileInfo, mainHeader->databaseID,
                     walHeader.databaseID);

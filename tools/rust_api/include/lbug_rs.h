@@ -110,19 +110,19 @@ inline uint32_t logical_type_get_decimal_scale(const lbug::common::LogicalType& 
 std::unique_ptr<lbug::main::Database> new_database(std::string_view databasePath,
     uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
     uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
-    bool throwOnWalReplayFailure, bool enableChecksums);
+    bool throwOnWalReplayFailure, bool enableChecksums, bool allowLegacyKuzuReadOnly);
 
 std::unique_ptr<lbug::main::Database> new_database_with_recovery(std::string_view databasePath,
     uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
     uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
-    bool throwOnWalReplayFailure, bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery,
-    size_t context);
+    bool throwOnWalReplayFailure, bool enableChecksums, bool allowLegacyKuzuReadOnly,
+    rust::Fn<bool(size_t)> beforeRecovery, size_t context);
 
 std::unique_ptr<lbug::main::Database> new_database_with_malformed_wal_recovery(
     std::string_view databasePath, uint64_t bufferPoolSize, uint64_t maxNumThreads,
     bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
     int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
-    rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
+    bool allowLegacyKuzuReadOnly, rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
     rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context);
 
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);

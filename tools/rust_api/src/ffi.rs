@@ -1,7 +1,7 @@
 #[cfg(feature = "arrow")]
 pub(crate) mod arrow;
 
-use cxx::{ExternType, type_id};
+use cxx::{type_id, ExternType};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_void};
@@ -163,6 +163,7 @@ pub(crate) mod ffi {
             checkpoint_threshold: i64,
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
+            allow_legacy_kuzu_read_only: bool,
         ) -> Result<UniquePtr<Database>>;
 
         #[allow(clippy::fn_params_excessive_bools)]
@@ -177,6 +178,7 @@ pub(crate) mod ffi {
             checkpoint_threshold: i64,
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
+            allow_legacy_kuzu_read_only: bool,
             before_recovery: fn(usize) -> bool,
             context: usize,
         ) -> Result<UniquePtr<Database>>;
@@ -201,6 +203,7 @@ pub(crate) mod ffi {
             checkpoint_threshold: i64,
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
+            allow_legacy_kuzu_read_only: bool,
             recover: fn(usize, &WalRecoveryContext) -> bool,
             admit: fn(usize, &WalRecoveryContext) -> bool,
             context: usize,

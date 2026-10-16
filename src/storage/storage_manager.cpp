@@ -297,7 +297,8 @@ const storage::DatabaseHeader* StorageManager::getOrInitDatabaseHeader(
     const main::ClientContext& clientContext) {
     if (databaseHeader == nullptr) {
         // We should only create the database header if a persistent one doesn't exist
-        KU_ASSERT(std::nullopt == DatabaseHeader::readDatabaseHeader(*dataFH->getFileInfo()));
+        KU_ASSERT(std::nullopt == DatabaseHeader::readDatabaseHeader(*dataFH->getFileInfo(),
+                                      clientContext.getDBConfig()->allowLegacyKuzuReadOnly));
         databaseHeader = std::make_unique<DatabaseHeader>(
             DatabaseHeader::createInitialHeader(RandomEngine::Get(clientContext)));
     }

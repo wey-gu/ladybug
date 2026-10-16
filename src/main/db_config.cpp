@@ -1,5 +1,6 @@
 #include "main/db_config.h"
 
+#include "common/exception/runtime.h"
 #include "common/string_utils.h"
 #include "main/database.h"
 #include "main/settings.h"
@@ -10,9 +11,9 @@ namespace lbug {
 namespace main {
 
 #define GET_CONFIGURATION(_PARAM)                                                                  \
-    { _PARAM::name, _PARAM::inputType, _PARAM::setContext, _PARAM::getSetting }
+    {_PARAM::name, _PARAM::inputType, _PARAM::setContext, _PARAM::getSetting}
 
-static ConfigurationOption options[] = { // NOLINT(cert-err58-cpp):
+static ConfigurationOption options[] = {// NOLINT(cert-err58-cpp):
     GET_CONFIGURATION(ThreadsSetting), GET_CONFIGURATION(TimeoutSetting),
     GET_CONFIGURATION(WarningLimitSetting), GET_CONFIGURATION(VarLengthExtendMaxDepthSetting),
     GET_CONFIGURATION(SparseFrontierThresholdSetting), GET_CONFIGURATION(EnableSemiMaskSetting),
@@ -32,7 +33,12 @@ DBConfig::DBConfig(const SystemConfig& systemConfig)
       checkpointThreshold{systemConfig.checkpointThreshold},
       forceCheckpointOnClose{systemConfig.forceCheckpointOnClose},
       throwOnWalReplayFailure(systemConfig.throwOnWalReplayFailure),
-      enableChecksums(systemConfig.enableChecksums), enableSpillingToDisk{true} {
+      enableChecksums(systemConfig.enableChecksums),
+      allowLegacyKuzuReadOnly(systemConfig.allowLegacyKuzuReadOnly), enableSpillingToDisk{true} {
+    if (allowLegacyKuzuReadOnly && (!readOnly || !throwOnWalReplayFailure || !enableChecksums)) {
+        throw RuntimeException(
+            "Legacy KUZU recovery reading requires strict read-only opening with checksums.");
+    }
 #if defined(__APPLE__)
     this->threadQos = systemConfig.threadQos;
 #endif

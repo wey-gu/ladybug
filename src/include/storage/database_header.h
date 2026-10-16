@@ -21,12 +21,14 @@ struct DatabaseHeader {
     void freeMetadataPageRange(PageManager& pageManager) const;
     void serialize(common::Serializer& ser) const;
 
-    static DatabaseHeader deserialize(common::Deserializer& deSer);
+    static DatabaseHeader deserialize(common::Deserializer& deSer,
+        bool allowLegacyKuzuReadOnly = false);
     static DatabaseHeader createInitialHeader(common::RandomEngine* randomEngine);
 
     // If we haven't written a header to the database file yet (e.g. if the file is empty) this
     // function will return a nullopt
-    static std::optional<DatabaseHeader> readDatabaseHeader(common::FileInfo& dataFileInfo);
+    static std::optional<DatabaseHeader> readDatabaseHeader(common::FileInfo& dataFileInfo,
+        bool allowLegacyKuzuReadOnly = false);
 };
 } // namespace storage
 } // namespace lbug

@@ -85,6 +85,9 @@ struct LBUG_API SystemConfig {
     bool forceCheckpointOnClose;
     bool throwOnWalReplayFailure;
     bool enableChecksums;
+    /** Opt-in reader for unchanged KUZU storage-39 recovery images. Requires
+     * strict read-only opening with checksums. Normal startup/writers stay off. */
+    bool allowLegacyKuzuReadOnly = false;
 #if defined(__APPLE__)
     uint32_t threadQos;
 #endif

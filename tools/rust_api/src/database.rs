@@ -79,6 +79,8 @@ pub struct SystemConfig {
     throw_on_wal_replay_failure: bool,
     /// If true, the database will use checksums to detect corruption in the WAL file.
     enable_checksums: bool,
+    /// Opt-in strict read-only reader for a retained KUZU storage-39 image.
+    allow_legacy_kuzu_read_only: bool,
 }
 
 #[cfg(test)]
@@ -94,6 +96,7 @@ pub(crate) const SYSTEM_CONFIG_FOR_TESTS: SystemConfig = SystemConfig {
     checkpoint_threshold: -1_i64,
     throw_on_wal_replay_failure: true,
     enable_checksums: true,
+    allow_legacy_kuzu_read_only: false,
 };
 
 impl Default for SystemConfig {
@@ -109,6 +112,7 @@ impl Default for SystemConfig {
             checkpoint_threshold: -1_i64,
             throw_on_wal_replay_failure: true,
             enable_checksums: true,
+            allow_legacy_kuzu_read_only: false,
         }
     }
 }
@@ -146,6 +150,14 @@ impl SystemConfig {
         self.throw_on_wal_replay_failure = throw_on_wal_replay_failure;
         self
     }
+    /// Read a retained KUZU storage-39 recovery image without modifying its
+    /// format. Requires read_only=true, strict WAL replay and checksums. Other
+    /// legacy versions, writable/recovery opens and pending shadow replay stay
+    /// unsupported. The native constructor enforces this after all builders.
+    pub fn allow_legacy_kuzu_read_only(mut self, enabled: bool) -> Self {
+        self.allow_legacy_kuzu_read_only = enabled;
+        self
+    }
     pub fn enable_checksums(mut self, enable_checksums: bool) -> Self {
         self.enable_checksums = enable_checksums;
         self
@@ -174,6 +186,7 @@ impl Database {
                 config.checkpoint_threshold,
                 config.throw_on_wal_replay_failure,
                 config.enable_checksums,
+                config.allow_legacy_kuzu_read_only,
             )?),
         })
     }
@@ -211,6 +224,7 @@ impl Database {
             config.checkpoint_threshold,
             config.throw_on_wal_replay_failure,
             config.enable_checksums,
+            config.allow_legacy_kuzu_read_only,
             run::<F>,
             std::ptr::addr_of_mut!(callback) as usize,
         );
@@ -311,6 +325,7 @@ impl Database {
             config.checkpoint_threshold,
             config.throw_on_wal_replay_failure,
             config.enable_checksums,
+            config.allow_legacy_kuzu_read_only,
             run::<A, F>,
             validate::<A, F>,
             std::ptr::addr_of_mut!(callback) as usize,

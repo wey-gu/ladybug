@@ -551,6 +551,26 @@ TEST_F(InputValidationTest, InterruptedCheckpointReopensWithRecoveredPageExtent)
         ASSERT_THROW(interrupted.writeCheckpoint(), RuntimeException);
     }
     database.reset();
+    // The compatibility capability is never permission to apply shadow pages.
+    // This is a genuine current-writer interruption, not a rewritten legacy fixture.
+    const auto beforeMain = readBytes(path);
+    const auto beforeWal = readBytes(path + ".wal");
+    const auto beforeShadow = readBytes(path + ".shadow");
+    auto readonlyConfig = config;
+    readonlyConfig.readOnly = true;
+    readonlyConfig.allowLegacyKuzuReadOnly = true;
+    try {
+        main::Database readonly{path, readonlyConfig};
+        FAIL() << "readonly opening must refuse pending shadow replay";
+    } catch (const RuntimeException& error) {
+        EXPECT_NE(
+            std::string{error.what()}.find("Couldn't replay shadow pages under read-only mode"),
+            std::string::npos)
+            << error.what();
+    }
+    EXPECT_EQ(readBytes(path), beforeMain);
+    EXPECT_EQ(readBytes(path + ".wal"), beforeWal);
+    EXPECT_EQ(readBytes(path + ".shadow"), beforeShadow);
     ASSERT_NO_THROW(database = std::make_unique<main::Database>(path, config));
     EXPECT_FALSE(independentWriterCanLock(path));
     {
