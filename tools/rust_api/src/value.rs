@@ -647,7 +647,7 @@ impl TryFrom<&ffi::Value> for Value {
                 let LogicalType::Union { types } = ffi::value_get_data_type(value).into() else {
                     unreachable!()
                 };
-                debug_assert!(ffi::value_get_children_size(value) == 1);
+                debug_assert_eq!(ffi::value_get_children_size(value), 1);
                 let value: Value = ffi::value_get_child(value, 0).try_into()?;
                 Ok(Value::Union {
                     types,

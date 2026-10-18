@@ -63,7 +63,10 @@
 //! ```
 
 pub use connection::{Connection, PreparedStatement};
-pub use database::{Database, SystemConfig, WalRecoverySnapshot};
+pub use database::{
+    Database, SystemConfig, VerifiedWalPrefix, WalPrefixStopReason, WalRecoveryAction,
+    WalRecoverySnapshot,
+};
 pub use error::Error;
 pub use logical_type::LogicalType;
 #[cfg(feature = "arrow")]

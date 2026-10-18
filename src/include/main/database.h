@@ -29,10 +29,12 @@ class MapperExtension;
 
 namespace storage {
 class StorageExtension;
+struct VerifiedWalPrefix;
 } // namespace storage
 
 namespace main {
 class DatabaseManager;
+enum class WalRecoveryAction : uint8_t { Decline = 0, Isolate = 1, VerifiedPrefix = 2 };
 /**
  * @brief Stores runtime configuration for creating or opening a Database
  */
@@ -117,9 +119,11 @@ public:
      * may snapshot it but must never open another descriptor for that inode. */
     LBUG_API Database(std::string_view databasePath, SystemConfig systemConfig,
         const std::function<void()>& beforeRecovery,
-        std::function<bool(common::FileInfo&)> malformedWalRecovery,
+        std::function<WalRecoveryAction(common::FileInfo&, const storage::VerifiedWalPrefix*)>
+            malformedWalRecovery,
         std::function<bool(common::FileInfo&)> admitRecovery = {});
-    bool tryRecoverMalformedWal(common::FileInfo& retainedMain);
+    WalRecoveryAction tryRecoverMalformedWal(common::FileInfo& retainedMain,
+        const storage::VerifiedWalPrefix* prefix);
     /**
      * @brief Destructs the database object.
      */
@@ -205,7 +209,8 @@ private:
     std::unique_ptr<storage::StorageManager> storageManager;
     std::unique_ptr<transaction::TransactionManager> transactionManager;
     std::unique_ptr<common::FileInfo> lockFile;
-    std::function<bool(common::FileInfo&)> malformedWalRecovery;
+    std::function<WalRecoveryAction(common::FileInfo&, const storage::VerifiedWalPrefix*)>
+        malformedWalRecovery;
     std::unique_ptr<DatabaseManager> databaseManager;
     std::unique_ptr<extension::ExtensionManager> extensionManager;
     QueryIDGenerator queryIDGenerator;

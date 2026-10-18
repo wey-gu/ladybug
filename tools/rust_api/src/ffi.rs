@@ -1,7 +1,7 @@
 #[cfg(feature = "arrow")]
 pub(crate) mod arrow;
 
-use cxx::{ExternType, type_id};
+use cxx::{type_id, ExternType};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_void};
@@ -183,6 +183,14 @@ pub(crate) mod ffi {
 
         type WalRecoveryContext;
         fn database_identity(database: Pin<&mut Database>) -> Result<String>;
+        fn has_verified_prefix(self: &WalRecoveryContext) -> bool;
+        fn prefix_commit_end(self: &WalRecoveryContext) -> u64;
+        fn prefix_transaction_count(self: &WalRecoveryContext) -> u64;
+        fn prefix_failed_record_start(self: &WalRecoveryContext) -> u64;
+        fn prefix_wal_size(self: &WalRecoveryContext) -> u64;
+        fn prefix_stop_reason(self: &WalRecoveryContext) -> u8;
+        fn prefix_zero_suffix(self: &WalRecoveryContext) -> bool;
+        fn prefix_sha256(self: &WalRecoveryContext) -> String;
         fn main_size(self: &WalRecoveryContext) -> u64;
         fn available_space(self: &WalRecoveryContext) -> Result<u64>;
         fn main_identity(self: &WalRecoveryContext) -> Result<String>;
@@ -201,7 +209,7 @@ pub(crate) mod ffi {
             checkpoint_threshold: i64,
             throw_on_wal_replay_failure: bool,
             enable_checksums: bool,
-            recover: fn(usize, &WalRecoveryContext) -> bool,
+            recover: fn(usize, &WalRecoveryContext) -> u8,
             admit: fn(usize, &WalRecoveryContext) -> bool,
             context: usize,
         ) -> Result<UniquePtr<Database>>;

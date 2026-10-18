@@ -13,6 +13,36 @@ enum RecoveryCallbackFailure {
     RecoveryPanicked,
 }
 
+/// Native observations after identity/header checks and complete record checksums.
+/// Excluded suffixes can contain acknowledged writes; no lossless claim is implied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedWalPrefix {
+    pub commit_end: u64,
+    pub transaction_count: u64,
+    pub failed_record_start: u64,
+    pub wal_size: u64,
+    pub stop_reason: WalPrefixStopReason,
+    pub zero_suffix: bool,
+    pub prefix_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WalPrefixStopReason {
+    InvalidRecordType,
+    ChecksumMismatch,
+    UnexpectedEof,
+    InvalidTransaction,
+}
+
+/// Recovery callbacks must preserve full evidence before publishing either action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum WalRecoveryAction {
+    Decline = 0,
+    Isolate = 1,
+    VerifiedPrefix = 2,
+}
+
 /// Borrowed read-only access to the main file through its retained native lock.
 /// Available only inside a synchronous malformed-WAL recovery callback.
 pub struct WalRecoverySnapshot<'a> {
@@ -20,6 +50,29 @@ pub struct WalRecoverySnapshot<'a> {
 }
 
 impl WalRecoverySnapshot<'_> {
+    /// Available only for checksummed, identity-admitted malformed WAL.
+    pub fn verified_prefix(&self) -> Option<VerifiedWalPrefix> {
+        if !self.native.has_verified_prefix() {
+            return None;
+        }
+        let stop_reason = match self.native.prefix_stop_reason() {
+            1 => WalPrefixStopReason::InvalidRecordType,
+            2 => WalPrefixStopReason::ChecksumMismatch,
+            3 => WalPrefixStopReason::UnexpectedEof,
+            5 => WalPrefixStopReason::InvalidTransaction,
+            _ => return None,
+        };
+        Some(VerifiedWalPrefix {
+            commit_end: self.native.prefix_commit_end(),
+            transaction_count: self.native.prefix_transaction_count(),
+            failed_record_start: self.native.prefix_failed_record_start(),
+            wal_size: self.native.prefix_wal_size(),
+            stop_reason,
+            zero_suffix: self.native.prefix_zero_suffix(),
+            prefix_sha256: self.native.prefix_sha256(),
+        })
+    }
+
     /// Available bytes on the retained main file volume; failure is not zero.
     pub fn available_space(&self) -> Result<u64, Error> {
         Ok(self.native.available_space()?)
@@ -251,10 +304,31 @@ impl Database {
         A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
         F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
     {
-        fn run<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> bool
+        Self::new_with_wal_recovery_actions(path, config, admit, |snapshot| {
+            if recover(snapshot) {
+                WalRecoveryAction::Isolate
+            } else {
+                WalRecoveryAction::Decline
+            }
+        })
+    }
+
+    /// Explicit typed action; `VerifiedPrefix` requires exact native SHA-256/COMMIT validation.
+    pub fn new_with_wal_recovery_actions<P, A, F>(
+        path: P,
+        config: SystemConfig,
+        admit: A,
+        recover: F,
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+        A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+        F: FnOnce(&WalRecoverySnapshot<'_>) -> WalRecoveryAction,
+    {
+        fn run<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> u8
         where
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
-            F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+            F: FnOnce(&WalRecoverySnapshot<'_>) -> WalRecoveryAction,
         {
             let state = unsafe {
                 &mut *(context as *mut (Option<F>, Option<A>, Option<RecoveryCallbackFailure>))
@@ -264,21 +338,21 @@ impl Database {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| recover(&snapshot)))
             });
             match outcome {
-                Some(Ok(true)) => true,
+                Some(Ok(action)) if action != WalRecoveryAction::Decline => action as u8,
                 Some(Err(_)) => {
                     state.2 = Some(RecoveryCallbackFailure::RecoveryPanicked);
-                    false
+                    0
                 }
                 _ => {
                     state.2 = Some(RecoveryCallbackFailure::RecoveryFailed);
-                    false
+                    0
                 }
             }
         }
         fn validate<A, F>(context: usize, native: &ffi::WalRecoveryContext) -> bool
         where
             A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
-            F: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+            F: FnOnce(&WalRecoverySnapshot<'_>) -> WalRecoveryAction,
         {
             let state = unsafe {
                 &mut *(context as *mut (Option<F>, Option<A>, Option<RecoveryCallbackFailure>))
@@ -526,7 +600,7 @@ mod tests {
         let results: HashSet<String> = conn
             .query("MATCH (p:Person) RETURN p.name")?
             .map(|tuple| {
-                assert!(tuple.len() == 1);
+                assert_eq!(tuple.len(), 1);
                 if let Value::String(value) = &tuple[0] {
                     value.clone()
                 } else {
@@ -537,7 +611,10 @@ mod tests {
                 }
             })
             .collect();
-        assert!(results == HashSet::from(["Alice".to_string(), "Bob".to_string()]));
+        assert_eq!(
+            results,
+            HashSet::from(["Alice".to_string(), "Bob".to_string()])
+        );
         Ok(())
     }
 }

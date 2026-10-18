@@ -1,5 +1,7 @@
 #include "storage/wal/wal_replayer.h"
 
+#include <algorithm>
+
 #include "binder/binder.h"
 #include "catalog/catalog_entry/scalar_macro_catalog_entry.h"
 #include "catalog/catalog_entry/sequence_catalog_entry.h"
@@ -9,6 +11,7 @@
 #include "common/file_system/file_system.h"
 #include "common/file_system/virtual_file_system.h"
 #include "common/serializer/buffered_file.h"
+#include "common/sha256.h"
 #include "extension/extension_manager.h"
 #include "main/client_context.h"
 #include "main/database.h"
@@ -84,9 +87,25 @@ static uint64_t getReadOffset(Deserializer& deSer, bool enableChecksums) {
     }
 }
 
+// Hash with fixed memory before releasing the WAL reader and after callback publication.
+static std::string prefixSha256(FileInfo& file, uint64_t end) {
+    SHA256 digest;
+    uint8_t buffer[65536];
+    for (uint64_t offset = 0; offset < end;) {
+        const auto size = std::min<uint64_t>(sizeof(buffer), end - offset);
+        file.readFromFile(buffer, size, offset);
+        digest.addString(std::string{reinterpret_cast<char*>(buffer), static_cast<size_t>(size)});
+        offset += size;
+    }
+    std::string value(SHA256::SHA256_HASH_LENGTH_TEXT, '\0');
+    digest.finishSHA256(value.data());
+    return value;
+}
+
 void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) const {
     auto vfs = VirtualFileSystem::GetUnsafe(clientContext);
     Checkpointer checkpointer(clientContext);
+    bool checkpointAlreadyLoaded = false;
     // First, check if the WAL file exists. If it does not, we can safely remove the shadow file.
     if (!vfs->fileOrPathExists(walPath, &clientContext)) {
         removeFileIfExists(shadowFilePath);
@@ -122,32 +141,53 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
             // This loads checkpoint metadata without applying WAL/shadow pages.
             try {
                 checkpointer.readCheckpoint();
+                checkpointAlreadyLoaded = true;
             } catch (const std::exception& failure) {
                 throw RuntimeException(
                     std::string{"Checkpoint validation failed during malformed-WAL admission: "} +
                     failure.what() + "; original WAL failure: " + malformed.what());
             }
             auto* main = StorageManager::Get(clientContext)->getDataFH()->getFileInfo();
-            bool recovered = false;
+            auto recovered = lbug::main::WalRecoveryAction::Decline;
             try {
-                recovered = clientContext.getDatabase()->tryRecoverMalformedWal(*main);
+                recovered = clientContext.getDatabase()->tryRecoverMalformedWal(*main,
+                    malformed.prefix ? &*malformed.prefix : nullptr);
             } catch (const std::exception& failure) {
                 throw RuntimeException(std::string{"Malformed-WAL recovery callback failed: "} +
                                        failure.what() +
                                        "; original WAL failure: " + malformed.what());
             }
-            if (!recovered) {
+            if (recovered == lbug::main::WalRecoveryAction::Decline) {
                 throw;
             }
-            // The owner must have retained evidence and isolated the active WAL.
-            // Never continue a stale reader, delete shadow evidence, or replay a
-            // partially decoded prefix after the bounded recovery decision.
-            if (vfs->fileOrPathExists(walPath, &clientContext)) {
-                throw RuntimeException(std::string{"Malformed-WAL recovery left the active WAL "
-                                                   "present; original WAL failure: "} +
-                                       malformed.what());
+            if (recovered == lbug::main::WalRecoveryAction::Isolate) {
+                if (vfs->fileOrPathExists(walPath, &clientContext)) {
+                    throw RuntimeException(std::string{"Malformed-WAL recovery left the active WAL "
+                                                       "present; original WAL failure: "} +
+                                           malformed.what());
+                }
+                return;
             }
-            return;
+            // Explicit prefix action is a different contract from boolean WAL isolation.
+            // Reopen after Windows rename and verify the exact admitted bytes before replay.
+            if (!malformed.prefix || !enableChecksums || malformed.prefix->transactionCount == 0 ||
+                malformed.prefix->commitEnd == 0) {
+                throw RuntimeException(
+                    "Verified-prefix recovery requires a checksummed committed prefix.");
+            }
+            fileInfo = openWALFile();
+            if (fileInfo->getFileSize() != malformed.prefix->commitEnd ||
+                prefixSha256(*fileInfo, malformed.prefix->commitEnd) !=
+                    malformed.prefix->prefixSha256) {
+                throw RuntimeException(
+                    "Published WAL prefix differs from the native verified prefix.");
+            }
+            syncWALFile(*fileInfo);
+            replayInfo = dryReplay(*fileInfo, true, enableChecksums);
+            if (replayInfo.isLastRecordCheckpoint ||
+                replayInfo.offsetDeserialized != malformed.prefix->commitEnd) {
+                throw RuntimeException("Published WAL prefix is not the verified COMMIT boundary.");
+            }
         }
         auto [offsetDeserialized, isLastRecordCheckpoint] = replayInfo;
         if (isLastRecordCheckpoint) {
@@ -160,7 +200,8 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
             // There is no checkpoint record, so we should remove the shadow file if it exists.
             removeFileIfExists(shadowFilePath);
             // Read the checkpointed data from the disk.
-            checkpointer.readCheckpoint();
+            if (!checkpointAlreadyLoaded)
+                checkpointer.readCheckpoint();
             // Resume by replaying the WAL file from the beginning until the last COMMIT record.
             Deserializer deserializer = initDeserializer(*fileInfo, clientContext, enableChecksums);
 
@@ -201,6 +242,30 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
     uint64_t offsetDeserialized = 0;
     bool isLastRecordCheckpoint = false;
     bool validatedHeader = false;
+    bool inTransaction = false;
+    uint64_t transactionCount = 0;
+    uint64_t failedRecordStart = 0;
+    auto malformed = [&](const std::exception& error, WalPrefixStopReason reason) {
+        std::optional<VerifiedWalPrefix> prefix;
+        if (enableChecksums) {
+            prefix = VerifiedWalPrefix{offsetDeserialized, transactionCount, failedRecordStart,
+                fileInfo.getFileSize(), reason, false, prefixSha256(fileInfo, offsetDeserialized)};
+            if (reason == WalPrefixStopReason::InvalidRecordType) {
+                // A zero suffix is an observation only. It may have replaced durable data.
+                uint8_t buffer[4096];
+                bool allZero = true;
+                for (auto offset = failedRecordStart; offset < prefix->walSize;) {
+                    const auto size = std::min<uint64_t>(sizeof(buffer), prefix->walSize - offset);
+                    fileInfo.readFromFile(buffer, size, offset);
+                    for (uint64_t i = 0; i < size; ++i)
+                        allZero = allZero && buffer[i] == 0;
+                    offset += size;
+                }
+                prefix->zeroSuffix = allZero;
+            }
+        }
+        return MalformedWalException(error.what(), prefix);
+    };
     try {
         Deserializer deserializer = initDeserializer(fileInfo, clientContext, enableChecksums);
 
@@ -226,39 +291,67 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
 
         bool finishedDeserializing = deserializer.finished();
         while (!finishedDeserializing) {
+            failedRecordStart = getReadOffset(deserializer, enableChecksums);
             auto walRecord = WALRecord::deserialize(deserializer, clientContext);
             finishedDeserializing = deserializer.finished();
             switch (walRecord->type) {
-            case WALRecordType::CHECKPOINT_RECORD: {
-                KU_ASSERT(finishedDeserializing);
-                // If we reach a checkpoint record, we can stop replaying.
+            case WALRecordType::BEGIN_TRANSACTION_RECORD:
+                if (inTransaction)
+                    throw InvalidWalTransactionException("Nested WAL transaction.");
+                inTransaction = true;
+                break;
+            case WALRecordType::COMMIT_RECORD:
+                if (!inTransaction)
+                    throw InvalidWalTransactionException("WAL COMMIT without BEGIN.");
+                inTransaction = false;
+                ++transactionCount;
+                // deserialize includes onObjectEnd/checksum verification.
+                offsetDeserialized = getReadOffset(deserializer, enableChecksums);
+                break;
+            case WALRecordType::CHECKPOINT_RECORD:
+                // A checkpoint may bind shadow pages. Never salvage around uncertain publication.
+                if (inTransaction || !finishedDeserializing) {
+                    throw RuntimeException(
+                        "WAL checkpoint is not a terminal transaction boundary.");
+                }
                 isLastRecordCheckpoint = true;
-                finishedDeserializing = true;
                 offsetDeserialized = getReadOffset(deserializer, enableChecksums);
-            } break;
-            case WALRecordType::COMMIT_RECORD: {
-                // Update the offset to the end of the last commit record.
-                offsetDeserialized = getReadOffset(deserializer, enableChecksums);
-            } break;
-            default: {
-                // DO NOTHING.
-            }
+                break;
+            default:
+                if (!inTransaction)
+                    throw InvalidWalTransactionException("WAL data outside transaction.");
+                break;
             }
         }
+        // Complete checksummed records without COMMIT are an ordinary crashed
+        // transaction, not malformed input. Keep the previous COMMIT boundary
+        // so generic strict open can roll back this tail without a callback.
     } catch (const InvalidWalRecordTypeException& error) {
         if (throwOnWalReplayFailure && validatedHeader) {
-            throw MalformedWalException(error.what());
+            throw malformed(error, WalPrefixStopReason::InvalidRecordType);
         }
         if (throwOnWalReplayFailure) {
             throw;
         }
     } catch (const WalChecksumMismatchException& error) {
         if (throwOnWalReplayFailure && validatedHeader) {
-            throw MalformedWalException(error.what());
+            throw malformed(error, WalPrefixStopReason::ChecksumMismatch);
         }
         if (throwOnWalReplayFailure) {
             throw;
         }
+    } catch (const UnexpectedEndOfFileException& error) {
+        if (throwOnWalReplayFailure && validatedHeader) {
+            throw malformed(error, WalPrefixStopReason::UnexpectedEof);
+        }
+        if (throwOnWalReplayFailure)
+            throw;
+    } catch (const InvalidWalTransactionException& error) {
+        if (throwOnWalReplayFailure && validatedHeader) {
+            throw malformed(error, WalPrefixStopReason::InvalidTransaction);
+        }
+        if (throwOnWalReplayFailure)
+            throw;
     } catch (...) {
         // If we hit an exception while deserializing, we assume that the WAL file is (partially)
         // corrupted. This should only happen for records of the last transaction recorded.

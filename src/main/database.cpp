@@ -99,7 +99,8 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
 }
 
 Database::Database(std::string_view databasePath, SystemConfig systemConfig,
-    const std::function<void()>& beforeRecovery, std::function<bool(common::FileInfo&)> recovery,
+    const std::function<void()>& beforeRecovery,
+    std::function<WalRecoveryAction(common::FileInfo&, const storage::VerifiedWalPrefix*)> recovery,
     std::function<bool(common::FileInfo&)> admitRecovery)
     : dbConfig(systemConfig), malformedWalRecovery{std::move(recovery)} {
     if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || databasePath.empty() ||
@@ -117,14 +118,15 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     malformedWalRecovery = {};
 }
 
-bool Database::tryRecoverMalformedWal(common::FileInfo& retainedMain) {
+WalRecoveryAction Database::tryRecoverMalformedWal(common::FileInfo& retainedMain,
+    const storage::VerifiedWalPrefix* prefix) {
     if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || !malformedWalRecovery) {
-        return false;
+        return WalRecoveryAction::Decline;
     }
     // One attempt; a handler failure cannot be retried through this constructor.
     auto handler = std::move(malformedWalRecovery);
     malformedWalRecovery = {};
-    return handler(retainedMain);
+    return handler(retainedMain, prefix);
 }
 
 std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {

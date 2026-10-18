@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "common/exception/runtime.h"
 #include "common/serializer/reader.h"
 #include "common/serializer/writer.h"
 
@@ -9,6 +10,12 @@ namespace lbug {
 namespace common {
 
 struct FileInfo;
+
+// A physical extent failure, distinct from filesystem I/O and allocation errors.
+class UnexpectedEndOfFileException final : public RuntimeException {
+public:
+    explicit UnexpectedEndOfFileException(const std::string& reason) : RuntimeException(reason) {}
+};
 
 class BufferedFileWriter final : public Writer {
 public:

@@ -30,12 +30,10 @@ fn child_open() {
     };
     let result = Database::new(Path::new(&path), config());
     if std::env::var("LBUG_TEST_EXPECT_BUSY").unwrap() == "1" {
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Could not set lock on file : ")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Could not set lock on file : "));
     } else {
         assert!(result.is_ok(), "{result:?}");
     }
@@ -67,12 +65,10 @@ fn callback_panic_skips_wal_replay_and_releases_lock() {
     std::fs::write(&wal, b"invalid WAL retained for proof").unwrap();
     let result =
         Database::new_with_recovery(&path, config(), || panic!("synthetic callback failure"));
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Before-recovery callback failed")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Before-recovery callback failed"));
     assert_eq!(
         std::fs::read(&wal).unwrap(),
         b"invalid WAL retained for proof"

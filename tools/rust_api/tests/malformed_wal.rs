@@ -52,6 +52,24 @@ mod startup_wal_recovery_tests {
             );
             return;
         }
+        if std::env::var("NMEM_5813_FIXTURE_MODE").unwrap() == "prefix-checksummed" {
+            let database = Database::new(&path, config().enable_checksums(true)).unwrap();
+            let connection = Connection::new(&database).unwrap();
+            connection
+                .query("CREATE NODE TABLE Memory(id STRING, content STRING, PRIMARY KEY(id))")
+                .unwrap();
+            connection
+                .query("CREATE (:Memory {id:'durable', content:'checkpoint sentinel'})")
+                .unwrap();
+            connection.query("CHECKPOINT").unwrap();
+            let mut ends = Vec::new();
+            for ordinal in 1..=3 {
+                connection.query(&format!("CREATE (:Memory {{id:'recent{ordinal}', content:'committed value {ordinal}'}})")).unwrap();
+                ends.push(std::fs::metadata(wal(&path)).unwrap().len().to_string());
+            }
+            std::fs::write(path.parent().unwrap().join("commit-ends"), ends.join("\n")).unwrap();
+            std::process::exit(0);
+        }
         let database = Database::new(&path, config()).unwrap();
         let connection = Connection::new(&database).unwrap();
         connection
@@ -96,6 +114,267 @@ mod startup_wal_recovery_tests {
                 value => panic!("{value:?}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn complete_uncommitted_tail_keeps_ordinary_strict_crash_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "prefix-checksummed");
+        let ends: Vec<u64> = std::fs::read_to_string(directory.path().join("commit-ends"))
+            .unwrap()
+            .lines()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let mut bytes = std::fs::read(wal(&path)).unwrap();
+        let probe_dir = directory.path().join("probe");
+        std::fs::create_dir(&probe_dir).unwrap();
+        let probe = probe_dir.join("graph.db");
+        std::fs::copy(&path, &probe).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(wal(&probe), &bytes).unwrap();
+        let observed = RefCell::new(None);
+        assert!(Database::new_with_malformed_wal_recovery(
+            &probe,
+            config().enable_checksums(true),
+            |snapshot| {
+                *observed.borrow_mut() = snapshot.verified_prefix();
+                false
+            }
+        )
+        .is_err());
+        let report = observed.into_inner().unwrap();
+        assert_eq!(
+            report.stop_reason,
+            lbug::WalPrefixStopReason::ChecksumMismatch
+        );
+        assert_eq!(report.commit_end, ends[1]);
+        // The native parser supplies the last COMMIT's start; no record-size
+        // assumptions enter this fully checksummed, unfinished transaction.
+        bytes[last] ^= 1;
+        bytes.truncate(usize::try_from(report.failed_record_start).unwrap());
+        std::fs::write(wal(&path), &bytes).unwrap();
+        let database = Database::new(&path, config().enable_checksums(true))
+            .expect("complete uncommitted records must roll back during ordinary strict open");
+        assert_eq!(memory_ids(&database), ["durable", "recent1", "recent2"]);
+        assert_eq!(std::fs::metadata(wal(&path)).unwrap().len(), ends[1]);
+        let connection = Connection::new(&database).unwrap();
+        connection
+            .query("CREATE (:Memory {id:'after-recovery', content:'new strict write'})")
+            .unwrap();
+        connection.query("CHECKPOINT").unwrap();
+        drop(connection);
+        drop(database);
+        let reopened =
+            Database::new(&path, config().enable_checksums(true).read_only(true)).unwrap();
+        assert_eq!(
+            memory_ids(&reopened),
+            ["after-recovery", "durable", "recent1", "recent2"]
+        );
+    }
+
+    #[test]
+    fn checksummed_prefix_preserves_exact_complete_transactions_on_copies() {
+        for damage_kind in ["zero", "torn-checksum", "torn-record", "middle"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("graph.db");
+            child(&path, "prefix-checksummed");
+            let ends: Vec<u64> = std::fs::read_to_string(directory.path().join("commit-ends"))
+                .unwrap()
+                .lines()
+                .map(|v| v.parse().unwrap())
+                .collect();
+            let mut bytes = std::fs::read(wal(&path)).unwrap();
+            let (kept, end) = match damage_kind {
+                "zero" => {
+                    bytes.extend([0; 4096]);
+                    (3, ends[2])
+                }
+                "torn-checksum" => {
+                    bytes.truncate(bytes.len() - 1);
+                    (2, ends[1])
+                }
+                "torn-record" => {
+                    bytes.truncate(usize::try_from(ends[1] + (ends[2] - ends[1]) / 2).unwrap());
+                    (2, ends[1])
+                }
+                _ => {
+                    bytes[usize::try_from(ends[1]).unwrap() - 1] ^= 1;
+                    (1, ends[0])
+                }
+            };
+            std::fs::write(wal(&path), &bytes).unwrap();
+            let original_main = std::fs::read(&path).unwrap();
+            let observed = RefCell::new(None);
+            let error = Database::new_with_malformed_wal_recovery(
+                &path,
+                config().enable_checksums(true),
+                |snapshot| {
+                    *observed.borrow_mut() = snapshot.verified_prefix();
+                    false
+                },
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::MalformedWalRecoveryFailed(_)),
+                "{error}"
+            );
+            let prefix = observed.into_inner().expect("native verified boundary");
+            assert_eq!(prefix.commit_end, end, "{damage_kind}");
+            assert_eq!(prefix.transaction_count, kept);
+            assert_eq!(prefix.wal_size, bytes.len() as u64);
+            assert!(prefix.failed_record_start >= end);
+            assert!(prefix.failed_record_start < prefix.wal_size);
+            assert_eq!(prefix.zero_suffix, damage_kind == "zero");
+            assert_eq!(
+                prefix.stop_reason,
+                match damage_kind {
+                    "zero" => lbug::WalPrefixStopReason::InvalidRecordType,
+                    "middle" => lbug::WalPrefixStopReason::ChecksumMismatch,
+                    _ => lbug::WalPrefixStopReason::UnexpectedEof,
+                }
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original_main);
+            assert_eq!(std::fs::read(wal(&path)).unwrap(), bytes);
+            let candidate = directory.path().join("candidate");
+            std::fs::create_dir(&candidate).unwrap();
+            let copied = candidate.join("graph.db");
+            std::fs::write(&copied, &original_main).unwrap();
+            std::fs::write(wal(&copied), &bytes[..usize::try_from(end).unwrap()]).unwrap();
+            {
+                let database = Database::new(&copied, config().enable_checksums(true)).unwrap();
+                let connection = Connection::new(&database).unwrap();
+                let rows: Vec<_> = connection
+                    .query("MATCH (m:Memory) RETURN m.id, m.content ORDER BY m.id")
+                    .unwrap()
+                    .map(|row| (row[0].to_string(), row[1].to_string()))
+                    .collect();
+                let mut expected = vec![("durable".into(), "checkpoint sentinel".into())];
+                expected.extend(
+                    (1..=kept).map(|n| (format!("recent{n}"), format!("committed value {n}"))),
+                );
+                assert_eq!(rows, expected, "{damage_kind}");
+                connection
+                    .query("CREATE (:Memory {id:'after-recovery', content:'strict new commit'})")
+                    .unwrap();
+                connection.query("CHECKPOINT").unwrap();
+            }
+            let reopened =
+                Database::new(&copied, config().enable_checksums(true).read_only(true)).unwrap();
+            let mut expected = vec!["after-recovery".to_owned(), "durable".to_owned()];
+            expected.extend((1..=kept).map(|n| format!("recent{n}")));
+            assert_eq!(memory_ids(&reopened), expected);
+            assert_eq!(std::fs::read(&path).unwrap(), original_main);
+            assert_eq!(std::fs::read(wal(&path)).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn typed_prefix_action_replays_only_the_exact_admitted_bytes() {
+        for substitute in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("graph.db");
+            child(&path, "prefix-checksummed");
+            let mut bytes = std::fs::read(wal(&path)).unwrap();
+            bytes.extend([0; 4096]);
+            std::fs::write(wal(&path), &bytes).unwrap();
+            let original_main = std::fs::read(&path).unwrap();
+            let substitute_bytes = if substitute {
+                let alternate = directory.path().join("alternate");
+                std::fs::create_dir(&alternate).unwrap();
+                let alternate = alternate.join("graph.db");
+                std::fs::write(&alternate, &original_main).unwrap();
+                {
+                    let database =
+                        Database::new(&alternate, config().enable_checksums(true)).unwrap();
+                    let connection = Connection::new(&database).unwrap();
+                    connection
+                        .query("CALL force_checkpoint_on_close=false")
+                        .unwrap();
+                    for n in 1..=3 {
+                        connection.query(&format!("CREATE (:Memory {{id:'recent{n}', content:'different value {n}'}})")).unwrap();
+                    }
+                }
+                Some(std::fs::read(wal(&alternate)).unwrap())
+            } else {
+                None
+            };
+            let observed = RefCell::new(None);
+            let result = Database::new_with_wal_recovery_actions(
+                &path,
+                config().enable_checksums(true),
+                |_| true,
+                |snapshot| {
+                    let prefix = snapshot.verified_prefix().unwrap();
+                    assert_eq!(prefix.transaction_count, 3);
+                    assert_eq!(prefix.prefix_sha256.len(), 64);
+                    let mut copied = bytes[..usize::try_from(prefix.commit_end).unwrap()].to_vec();
+                    if let Some(alternate) = substitute_bytes.as_ref() {
+                        assert_eq!(
+                            alternate.len(),
+                            copied.len(),
+                            "same identity and COMMIT extent"
+                        );
+                        copied.clone_from(alternate);
+                    }
+                    std::fs::write(wal(&path), &copied).unwrap();
+                    *observed.borrow_mut() = Some(prefix);
+                    lbug::WalRecoveryAction::VerifiedPrefix
+                },
+            );
+            assert!(observed.into_inner().is_some());
+            if substitute {
+                let error = result.expect_err("a valid same-identity substitute must never replay");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("differs from the native verified prefix"),
+                    "{error}"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), original_main);
+            } else {
+                let database = result.unwrap();
+                assert_eq!(
+                    memory_ids(&database),
+                    ["durable", "recent1", "recent2", "recent3"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_observation_never_admits_foreign_or_unchecksummed_wal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "prefix-checksummed");
+        let other = tempfile::tempdir().unwrap();
+        let foreign = other.path().join("graph.db");
+        child(&foreign, "prefix-checksummed");
+        let mut foreign_bytes = std::fs::read(wal(&foreign)).unwrap();
+        foreign_bytes.extend([0; 4096]);
+        std::fs::write(wal(&path), &foreign_bytes).unwrap();
+        let called = Cell::new(false);
+        let result = Database::new_with_malformed_wal_recovery(
+            &path,
+            config().enable_checksums(true),
+            |_| {
+                called.set(true);
+                false
+            },
+        );
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert_eq!(std::fs::read(wal(&path)).unwrap(), foreign_bytes);
+        let (_original, path) = seed();
+        damage(&path);
+        let observed = RefCell::new(None);
+        let _error = Database::new_with_malformed_wal_recovery(&path, config(), |snapshot| {
+            *observed.borrow_mut() = snapshot.verified_prefix();
+            false
+        })
+        .unwrap_err();
+        assert!(observed.into_inner().is_none());
     }
 
     #[test]

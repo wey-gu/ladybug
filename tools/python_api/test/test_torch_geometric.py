@@ -4,8 +4,12 @@ import warnings
 
 import ground_truth
 import torch
-from type_aliases import ConnDB
 from real_ladybug.constants import LABEL
+
+# Initialize the optional dependency before measuring conversion warnings.
+# Its import-time deprecations remain visible to pytest.
+from torch_geometric.data import Data
+from type_aliases import ConnDB
 
 
 def test_to_torch_geometric_nodes_only(conn_db_readonly: ConnDB) -> None:
@@ -30,6 +34,7 @@ def test_to_torch_geometric_nodes_only(conn_db_readonly: ConnDB) -> None:
     for w in ws:
         assert str(w.message) in warnings_ground_truth
 
+    assert isinstance(torch_geometric_data, Data)
     assert torch_geometric_data.ID.shape == torch.Size([8])
     assert torch_geometric_data.ID.dtype == torch.int64
     for i in range(8):

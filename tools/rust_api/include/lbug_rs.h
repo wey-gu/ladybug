@@ -23,11 +23,24 @@ namespace lbug::common {
 struct FileInfo;
 }
 
+namespace lbug::storage {
+struct VerifiedWalPrefix;
+}
+
 namespace lbug_rs {
 
 // Constructor-scoped capability; the native main FileInfo remains locked.
 struct WalRecoveryContext {
     lbug::common::FileInfo& main;
+    const lbug::storage::VerifiedWalPrefix* prefix = nullptr;
+    bool has_verified_prefix() const;
+    uint64_t prefix_commit_end() const;
+    uint64_t prefix_transaction_count() const;
+    uint64_t prefix_failed_record_start() const;
+    uint64_t prefix_wal_size() const;
+    uint8_t prefix_stop_reason() const;
+    bool prefix_zero_suffix() const;
+    rust::String prefix_sha256() const;
     uint64_t main_size() const;
     uint64_t available_space() const;
     rust::String main_identity() const;
@@ -122,7 +135,7 @@ std::unique_ptr<lbug::main::Database> new_database_with_malformed_wal_recovery(
     std::string_view databasePath, uint64_t bufferPoolSize, uint64_t maxNumThreads,
     bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
     int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
-    rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
+    rust::Fn<uint8_t(size_t, const WalRecoveryContext&)> recover,
     rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context);
 
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);

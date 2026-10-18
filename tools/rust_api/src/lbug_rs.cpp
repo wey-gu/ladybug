@@ -1,5 +1,8 @@
 #include "lbug_rs.h"
+
 #include <stdexcept>
+
+#include "storage/wal/malformed_wal.h"
 #ifdef LBUG_BUNDLED
 #include "common/file_system/file_info.h"
 #include "common/file_system/local_file_system.h"
@@ -105,10 +108,10 @@ std::unique_ptr<Database> new_database(std::string_view databasePath, uint64_t b
 }
 
 std::unique_ptr<Database> new_database_with_recovery(std::string_view databasePath,
-    uint64_t bufferPoolSize,
-    uint64_t maxNumThreads, bool enableCompression, bool readOnly, uint64_t maxDBSize,
-    bool autoCheckpoint, int64_t checkpointThreshold, bool throwOnWalReplayFailure,
-    bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery, size_t context) {
+    uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
+    uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
+    bool throwOnWalReplayFailure, bool enableChecksums, rust::Fn<bool(size_t)> beforeRecovery,
+    size_t context) {
     auto systemConfig = SystemConfig();
     if (bufferPoolSize > 0) {
         systemConfig.bufferPoolSize = bufferPoolSize;
@@ -134,6 +137,31 @@ std::unique_ptr<Database> new_database_with_recovery(std::string_view databasePa
     });
 }
 
+rust::String WalRecoveryContext::prefix_sha256() const {
+    return prefix ? prefix->prefixSha256 : std::string{};
+}
+bool WalRecoveryContext::has_verified_prefix() const {
+    return prefix != nullptr;
+}
+uint64_t WalRecoveryContext::prefix_commit_end() const {
+    return prefix ? prefix->commitEnd : 0;
+}
+uint64_t WalRecoveryContext::prefix_transaction_count() const {
+    return prefix ? prefix->transactionCount : 0;
+}
+uint64_t WalRecoveryContext::prefix_failed_record_start() const {
+    return prefix ? prefix->failedRecordStart : 0;
+}
+uint64_t WalRecoveryContext::prefix_wal_size() const {
+    return prefix ? prefix->walSize : 0;
+}
+uint8_t WalRecoveryContext::prefix_stop_reason() const {
+    return prefix ? static_cast<uint8_t>(prefix->reason) : 0;
+}
+bool WalRecoveryContext::prefix_zero_suffix() const {
+    return prefix && prefix->zeroSuffix;
+}
+
 uint64_t WalRecoveryContext::main_size() const {
     return main.getFileSize();
 }
@@ -144,34 +172,39 @@ uint64_t WalRecoveryContext::available_space() const {
 
 rust::String WalRecoveryContext::main_identity() const {
     const auto header = lbug::storage::DatabaseHeader::readDatabaseHeader(main);
-    if (!header) throw std::runtime_error("Retained recovery main has no valid header.");
+    if (!header)
+        throw std::runtime_error("Retained recovery main has no valid header.");
     return lbug::common::UUID::toString(header->databaseID);
 }
 
 bool WalRecoveryContext::owns_named_main() const {
     const auto* local = dynamic_cast<const lbug::common::LocalFileInfo*>(&main);
-    if (!local) return false;
+    if (!local)
+        return false;
 #ifdef _WIN32
     BY_HANDLE_FILE_INFORMATION retained{}, named{};
     auto handle = const_cast<void*>(local->handle);
-    if (!GetFileInformationByHandle(handle, &retained)) return false;
+    if (!GetFileInformationByHandle(handle, &retained))
+        return false;
     const auto name = std::filesystem::u8path(main.path);
     auto probe = CreateFileW(name.c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
         FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    if (probe == INVALID_HANDLE_VALUE) return false;
+    if (probe == INVALID_HANDLE_VALUE)
+        return false;
     const bool ok = GetFileInformationByHandle(probe, &named);
     CloseHandle(probe);
     return ok && retained.nNumberOfLinks == 1 && named.nNumberOfLinks == 1 &&
-        !(named.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
-        retained.dwVolumeSerialNumber == named.dwVolumeSerialNumber &&
-        retained.nFileIndexHigh == named.nFileIndexHigh &&
-        retained.nFileIndexLow == named.nFileIndexLow;
+           !(named.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+           retained.dwVolumeSerialNumber == named.dwVolumeSerialNumber &&
+           retained.nFileIndexHigh == named.nFileIndexHigh &&
+           retained.nFileIndexLow == named.nFileIndexLow;
 #else
     struct stat retained{}, named{};
     return fstat(local->fd, &retained) == 0 && lstat(main.path.c_str(), &named) == 0 &&
-        S_ISREG(retained.st_mode) && S_ISREG(named.st_mode) && retained.st_nlink == 1 &&
-        named.st_nlink == 1 && retained.st_dev == named.st_dev && retained.st_ino == named.st_ino;
+           S_ISREG(retained.st_mode) && S_ISREG(named.st_mode) && retained.st_nlink == 1 &&
+           named.st_nlink == 1 && retained.st_dev == named.st_dev &&
+           retained.st_ino == named.st_ino;
 #endif
 }
 
@@ -192,29 +225,42 @@ void WalRecoveryContext::read_main(uint64_t offset, rust::Slice<uint8_t> buffer)
     }
 }
 
-std::unique_ptr<Database> new_database_with_malformed_wal_recovery(
-    std::string_view databasePath, uint64_t bufferPoolSize, uint64_t maxNumThreads,
-    bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
-    int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
-    rust::Fn<bool(size_t, const WalRecoveryContext&)> recover,
+std::unique_ptr<Database> new_database_with_malformed_wal_recovery(std::string_view databasePath,
+    uint64_t bufferPoolSize, uint64_t maxNumThreads, bool enableCompression, bool readOnly,
+    uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
+    bool throwOnWalReplayFailure, bool enableChecksums,
+    rust::Fn<uint8_t(size_t, const WalRecoveryContext&)> recover,
     rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context) {
     auto config = SystemConfig();
-    if (bufferPoolSize > 0) config.bufferPoolSize = bufferPoolSize;
-    if (maxNumThreads > 0) config.maxNumThreads = maxNumThreads;
+    if (bufferPoolSize > 0)
+        config.bufferPoolSize = bufferPoolSize;
+    if (maxNumThreads > 0)
+        config.maxNumThreads = maxNumThreads;
     config.enableCompression = enableCompression;
     config.readOnly = readOnly;
-    if (maxDBSize != -1u) config.maxDBSize = maxDBSize;
+    if (maxDBSize != -1u)
+        config.maxDBSize = maxDBSize;
     config.autoCheckpoint = autoCheckpoint;
-    if (checkpointThreshold >= 0) config.checkpointThreshold = checkpointThreshold;
+    if (checkpointThreshold >= 0)
+        config.checkpointThreshold = checkpointThreshold;
     config.throwOnWalReplayFailure = throwOnWalReplayFailure;
     config.enableChecksums = enableChecksums;
-    return std::make_unique<Database>(databasePath, config, std::function<void()>{},
-        [&](lbug::common::FileInfo& main) {
-            const WalRecoveryContext snapshot{main};
+    return std::make_unique<Database>(
+        databasePath, config, std::function<void()>{},
+        [&](lbug::common::FileInfo& main, const lbug::storage::VerifiedWalPrefix* prefix) {
+            const WalRecoveryContext snapshot{main, prefix};
             // Returning false lets the native catch rethrow the original typed
             // malformed cause. Rust adds the callback phase without losing it.
-            return recover(context, snapshot);
-        }, [&](lbug::common::FileInfo& main) {
+            switch (recover(context, snapshot)) {
+            case 1:
+                return lbug::main::WalRecoveryAction::Isolate;
+            case 2:
+                return lbug::main::WalRecoveryAction::VerifiedPrefix;
+            default:
+                return lbug::main::WalRecoveryAction::Decline;
+            }
+        },
+        [&](lbug::common::FileInfo& main) {
             const WalRecoveryContext snapshot{main};
             return admit(context, snapshot);
         });
