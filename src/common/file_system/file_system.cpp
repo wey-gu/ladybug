@@ -39,7 +39,10 @@ std::filesystem::path FileSystem::pathFromUtf8(const std::string& path) {
         throw IOException("Filesystem path contains an embedded NUL");
     }
 #if defined(_WIN32)
-    return std::filesystem::path{WindowsUtils::utf8ToUnicode(path.c_str())};
+    // Internal/VFS joins use '/', but Win32 does not translate that separator
+    // inside the verbatim namespace (\\?\). Convert only at the native path
+    // boundary, preserving the namespace and Unicode/long-path identity.
+    return std::filesystem::path{WindowsUtils::utf8ToUnicode(path.c_str())}.make_preferred();
 #else
     return std::filesystem::path{path};
 #endif

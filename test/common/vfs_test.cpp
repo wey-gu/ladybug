@@ -8,6 +8,27 @@
 
 using namespace lbug::common;
 
+#ifdef _WIN32
+TEST(VFSTests, NativeWindowsPathsPreserveNamespaceAndUseNativeSeparators) {
+    for (const auto& root : {std::string{R"(C:\backup)"}, std::string{R"(\\?\C:\backup)"},
+             std::string{R"(\\server\share\backup)"},
+             std::string{R"(\\?\UNC\server\share\backup)"}}) {
+        const auto joined = FileSystem::joinPath(root, "table.parquet");
+        EXPECT_EQ(FileSystem::pathToUtf8(FileSystem::pathFromUtf8(joined)),
+            root + R"(\table.parquet)");
+    }
+    // Explicit UTF-8 bytes avoid the compiler's source-code-page setting.
+    const std::string unicode = "\xE6\xBA\x90\xE7\x9B\xAE\xE5\xBD\x95";
+    const auto root = std::string{R"(\\?\C:\)"} + unicode + "\\" + std::string(240, 'a');
+    EXPECT_EQ(FileSystem::pathToUtf8(FileSystem::pathFromUtf8(
+                  FileSystem::joinPath(root, unicode + ".parquet")))),
+        root + "\\" + unicode + ".parquet");
+    // URI joining remains a VFS operation, independent of native conversion.
+    EXPECT_EQ(FileSystem::joinPath("s3://bucket/prefix", "table.parquet"),
+        "s3://bucket/prefix/table.parquet");
+}
+#endif
+
 TEST(VFSTests, VirtualFileSystemDeleteFiles) {
     std::string homeDir = "/tmp/dbHome";
     lbug::common::VirtualFileSystem vfs(homeDir);
