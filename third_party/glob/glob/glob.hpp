@@ -61,7 +61,8 @@ namespace {
 // regular expressions are UTF-8. Do not round-trip through the ANSI code page.
 static inline fs::path path_from_string(const std::string &value) {
 #ifdef _WIN32
-  return fs::u8path(value);
+  // Verbatim Win32 paths do not normalize '/' during filesystem calls.
+  return fs::u8path(value).make_preferred();
 #else
   return fs::path(value);
 #endif
