@@ -230,7 +230,7 @@ std::unique_ptr<Database> new_database_with_malformed_wal_recovery(std::string_v
     uint64_t maxDBSize, bool autoCheckpoint, int64_t checkpointThreshold,
     bool throwOnWalReplayFailure, bool enableChecksums,
     rust::Fn<uint8_t(size_t, const WalRecoveryContext&)> recover,
-    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context) {
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context, bool requireExisting) {
     auto config = SystemConfig();
     if (bufferPoolSize > 0)
         config.bufferPoolSize = bufferPoolSize;
@@ -263,7 +263,7 @@ std::unique_ptr<Database> new_database_with_malformed_wal_recovery(std::string_v
         [&](lbug::common::FileInfo& main) {
             const WalRecoveryContext snapshot{main};
             return admit(context, snapshot);
-        });
+        }, requireExisting);
 }
 
 std::unique_ptr<lbug::main::Connection> database_connect(lbug::main::Database& database) {

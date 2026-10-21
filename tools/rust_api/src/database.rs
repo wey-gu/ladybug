@@ -313,12 +313,47 @@ impl Database {
         })
     }
 
+    /// Open only an existing, non-empty main and validate it under the native lock
+    /// before any initialization or replay. Malformed WAL recovery is never attempted.
+    pub fn new_existing_with_admission<P, A>(
+        path: P,
+        config: SystemConfig,
+        admit: A,
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+        A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+    {
+        Self::new_with_wal_recovery_actions_impl(
+            path,
+            config,
+            admit,
+            |_| WalRecoveryAction::Decline,
+            true,
+        )
+    }
+
     /// Explicit typed action; `VerifiedPrefix` requires exact native SHA-256/COMMIT validation.
     pub fn new_with_wal_recovery_actions<P, A, F>(
         path: P,
         config: SystemConfig,
         admit: A,
         recover: F,
+    ) -> Result<Self, Error>
+    where
+        P: AsRef<Path>,
+        A: FnOnce(&WalRecoverySnapshot<'_>) -> bool,
+        F: FnOnce(&WalRecoverySnapshot<'_>) -> WalRecoveryAction,
+    {
+        Self::new_with_wal_recovery_actions_impl(path, config, admit, recover, false)
+    }
+
+    fn new_with_wal_recovery_actions_impl<P, A, F>(
+        path: P,
+        config: SystemConfig,
+        admit: A,
+        recover: F,
+        require_existing: bool,
     ) -> Result<Self, Error>
     where
         P: AsRef<Path>,
@@ -388,6 +423,7 @@ impl Database {
             run::<A, F>,
             validate::<A, F>,
             std::ptr::addr_of_mut!(callback) as usize,
+            require_existing,
         );
         match db {
             Ok(db) => Ok(Database {

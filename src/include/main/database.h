@@ -121,7 +121,7 @@ public:
         const std::function<void()>& beforeRecovery,
         std::function<WalRecoveryAction(common::FileInfo&, const storage::VerifiedWalPrefix*)>
             malformedWalRecovery,
-        std::function<bool(common::FileInfo&)> admitRecovery = {});
+        std::function<bool(common::FileInfo&)> admitRecovery = {}, bool requireExisting = false);
     WalRecoveryAction tryRecoverMalformedWal(common::FileInfo& retainedMain,
         const storage::VerifiedWalPrefix* prefix);
     /**
@@ -190,7 +190,7 @@ private:
     static std::unique_ptr<storage::BufferManager> initBufferManager(const Database& db);
     void initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc);
     void initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc,
-        const std::function<void()>& beforeRecovery);
+        const std::function<void()>& beforeRecovery, bool requireExisting = false);
 
     // factory method only to be used for tests
     Database(std::string_view databasePath, SystemConfig systemConfig,

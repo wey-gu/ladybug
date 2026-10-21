@@ -101,7 +101,7 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
 Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     const std::function<void()>& beforeRecovery,
     std::function<WalRecoveryAction(common::FileInfo&, const storage::VerifiedWalPrefix*)> recovery,
-    std::function<bool(common::FileInfo&)> admitRecovery)
+    std::function<bool(common::FileInfo&)> admitRecovery, bool requireExisting)
     : dbConfig(systemConfig), malformedWalRecovery{std::move(recovery)} {
     if (dbConfig.readOnly || !dbConfig.throwOnWalReplayFailure || databasePath.empty() ||
         databasePath == ":memory:") {
@@ -113,7 +113,7 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig,
         if (admitRecovery && !admitRecovery(*storageManager->getDataFH()->getFileInfo())) {
             throw RuntimeException("Recovery admission callback failed.");
         }
-    });
+    }, requireExisting);
     // The constructor-scoped caller and its borrowed context do not outlive init.
     malformedWalRecovery = {};
 }
@@ -140,7 +140,7 @@ void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFu
 }
 
 void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc,
-    const std::function<void()>& beforeRecovery) {
+    const std::function<void()>& beforeRecovery, bool requireExisting) {
     // To expand a path with home directory(~), we have to pass in a dummy clientContext which
     // handles the home directory expansion.
     const auto dbPathStr = std::string(dbPath);
@@ -175,7 +175,7 @@ void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFu
     }
     // Acquire the same data-file handle retained for the entire database lifetime.
     // WAL replay (including removal of an empty WAL) must never precede this lock.
-    storageManager->initDataFileHandle(vfs.get(), &clientContext);
+    storageManager->initDataFileHandle(vfs.get(), &clientContext, requireExisting);
     if (clientContext.isInMemory()) {
         extensionManager->autoLoadLinkedExtensions(&clientContext);
         return;
