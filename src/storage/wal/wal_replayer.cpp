@@ -7,6 +7,8 @@
 #include "catalog/catalog_entry/sequence_catalog_entry.h"
 #include "catalog/catalog_entry/table_catalog_entry.h"
 #include "catalog/catalog_entry/type_catalog_entry.h"
+#include "common/exception/internal.h"
+#include "common/exception/runtime.h"
 #include "common/file_system/file_info.h"
 #include "common/file_system/file_system.h"
 #include "common/file_system/virtual_file_system.h"
@@ -84,6 +86,26 @@ static uint64_t getReadOffset(Deserializer& deSer, bool enableChecksums) {
         return deSer.getReader()->cast<ChecksumReader>()->getReadOffset();
     } else {
         return deSer.getReader()->cast<BufferedFileReader>()->getReadOffset();
+    }
+}
+
+// Decode one record during dry replay. Decoder invariant failures on persisted
+// bytes (KU_UNREACHABLE/assertions and decoder RuntimeExceptions) become a typed
+// cause so strict recovery can offer the verified committed prefix instead of
+// refusing on an unclassified internal error. Causes that already carry a type,
+// and environmental failures (I/O, memory, interruption), keep their meaning.
+static std::unique_ptr<WALRecord> decodeWALRecord(Deserializer& deserializer,
+    const main::ClientContext& clientContext) {
+    try {
+        return WALRecord::deserialize(deserializer, clientContext);
+    } catch (const InvalidWalRecordTypeException&) {
+        throw;
+    } catch (const UnexpectedEndOfFileException&) {
+        throw;
+    } catch (const InternalException& error) {
+        throw UndecodableWalRecordException(error.what());
+    } catch (const RuntimeException& error) {
+        throw UndecodableWalRecordException(error.what());
     }
 }
 
@@ -292,7 +314,7 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
         bool finishedDeserializing = deserializer.finished();
         while (!finishedDeserializing) {
             failedRecordStart = getReadOffset(deserializer, enableChecksums);
-            auto walRecord = WALRecord::deserialize(deserializer, clientContext);
+            auto walRecord = decodeWALRecord(deserializer, clientContext);
             finishedDeserializing = deserializer.finished();
             switch (walRecord->type) {
             case WALRecordType::BEGIN_TRANSACTION_RECORD:
@@ -349,6 +371,12 @@ WALReplayer::WALReplayInfo WALReplayer::dryReplay(FileInfo& fileInfo, bool throw
     } catch (const InvalidWalTransactionException& error) {
         if (throwOnWalReplayFailure && validatedHeader) {
             throw malformed(error, WalPrefixStopReason::InvalidTransaction);
+        }
+        if (throwOnWalReplayFailure)
+            throw;
+    } catch (const UndecodableWalRecordException& error) {
+        if (throwOnWalReplayFailure && validatedHeader) {
+            throw malformed(error, WalPrefixStopReason::UndecodableRecord);
         }
         if (throwOnWalReplayFailure)
             throw;
