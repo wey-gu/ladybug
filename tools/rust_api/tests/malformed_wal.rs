@@ -70,6 +70,30 @@ mod startup_wal_recovery_tests {
             std::fs::write(path.parent().unwrap().join("commit-ends"), ends.join("\n")).unwrap();
             std::process::exit(0);
         }
+        if std::env::var("NMEM_5813_FIXTURE_MODE").unwrap() == "large-record-checksummed" {
+            let database = Database::new(&path, config().enable_checksums(true)).unwrap();
+            let connection = Connection::new(&database).unwrap();
+            connection
+                .query("CREATE NODE TABLE Memory(id STRING, content STRING, PRIMARY KEY(id))")
+                .unwrap();
+            connection
+                .query("CREATE (:Memory {id:'durable', content:'checkpoint sentinel'})")
+                .unwrap();
+            connection.query("CHECKPOINT").unwrap();
+            // One committed record larger than the 4 KiB checksum entry buffer.
+            connection
+                .query(&format!(
+                    "CREATE (:Memory {{id:'large', content:'{}'}})",
+                    large_content()
+                ))
+                .unwrap();
+            connection
+                .query("CREATE (:Memory {id:'after-large', content:'later commit'})")
+                .unwrap();
+            assert!(std::fs::metadata(wal(&path)).unwrap().len() > 4096);
+            // Model an unclean exit: the shutdown checkpoint never runs.
+            std::process::exit(0);
+        }
         let database = Database::new(&path, config()).unwrap();
         let connection = Connection::new(&database).unwrap();
         connection
@@ -85,6 +109,97 @@ mod startup_wal_recovery_tests {
         assert!(std::fs::metadata(wal(&path)).unwrap().len() > 0);
         // Model a process exit after COMMIT without running checkpoint destructors.
         std::process::exit(0);
+    }
+
+    fn large_content() -> String {
+        (0..600).map(|n| format!("chunk{n:04} ")).collect()
+    }
+
+    #[test]
+    fn checksummed_record_larger_than_entry_buffer_replays_after_unclean_exit() {
+        // https://github.com/nowledge-co/mem/issues/8009: growing the checksum
+        // entry buffer dropped the bytes already accumulated for the record, so
+        // every committed record above 4 KiB was persisted with a stale head and
+        // could never be replayed.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "large-record-checksummed");
+        let database = Database::new(&path, config().enable_checksums(true))
+            .expect("a complete checksummed WAL must replay after an unclean exit");
+        assert_eq!(memory_ids(&database), ["after-large", "durable", "large"]);
+        let connection = Connection::new(&database).unwrap();
+        let content: Vec<_> = connection
+            .query("MATCH (m:Memory {id:'large'}) RETURN m.content")
+            .unwrap()
+            .map(|row| row[0].to_string())
+            .collect();
+        assert_eq!(content, [large_content()]);
+    }
+
+    #[test]
+    fn undecodable_record_body_reports_verified_prefix_instead_of_internal_assertion() {
+        // A record head that decodes as a valid record type but carries an
+        // unsupported physical type used to raise KU_UNREACHABLE in
+        // common/types/types.cpp before its checksum was reached. That
+        // InternalException bypassed malformed-WAL classification, so copied
+        // recovery was refused with no verified committed prefix.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "prefix-checksummed");
+        let ends: Vec<u64> = std::fs::read_to_string(directory.path().join("commit-ends"))
+            .unwrap()
+            .lines()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let mut bytes = std::fs::read(wal(&path)).unwrap();
+        let last = usize::try_from(ends[1]).unwrap()..usize::try_from(ends[2]).unwrap();
+        // LogicalType STRING (50), PhysicalType STRING (20), internal category.
+        let at = bytes[last.clone()]
+            .windows(3)
+            .position(|window| window == [50, 20, 0])
+            .expect("serialized STRING vector type in the last transaction")
+            + last.start;
+        bytes[at + 1] = 19; // Not a fixed-size or variable-size physical type.
+        std::fs::write(wal(&path), &bytes).unwrap();
+        let original_main = std::fs::read(&path).unwrap();
+        let observed = RefCell::new(None);
+        let error = Database::new_with_malformed_wal_recovery(
+            &path,
+            config().enable_checksums(true),
+            |snapshot| {
+                *observed.borrow_mut() = snapshot.verified_prefix();
+                false
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::MalformedWalRecoveryFailed(_)),
+            "{error}"
+        );
+        let prefix = observed.into_inner().expect("native verified boundary");
+        assert_eq!(
+            prefix.stop_reason,
+            lbug::WalPrefixStopReason::UndecodableRecord
+        );
+        assert_eq!(prefix.commit_end, ends[1]);
+        assert_eq!(prefix.transaction_count, 2);
+        assert_eq!(prefix.wal_size, bytes.len() as u64);
+        assert!(prefix.failed_record_start >= ends[1]);
+        assert!(prefix.failed_record_start < ends[2]);
+        assert!(!prefix.zero_suffix);
+        assert_eq!(std::fs::read(&path).unwrap(), original_main);
+        assert_eq!(std::fs::read(wal(&path)).unwrap(), bytes);
+        let candidate = directory.path().join("candidate");
+        std::fs::create_dir(&candidate).unwrap();
+        let copied = candidate.join("graph.db");
+        std::fs::write(&copied, &original_main).unwrap();
+        std::fs::write(
+            wal(&copied),
+            &bytes[..usize::try_from(prefix.commit_end).unwrap()],
+        )
+        .unwrap();
+        let database = Database::new(&copied, config().enable_checksums(true)).unwrap();
+        assert_eq!(memory_ids(&database), ["durable", "recent1", "recent2"]);
     }
 
     fn seed() -> (tempfile::TempDir, PathBuf) {

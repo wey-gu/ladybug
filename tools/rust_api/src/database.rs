@@ -32,6 +32,8 @@ pub enum WalPrefixStopReason {
     ChecksumMismatch,
     UnexpectedEof,
     InvalidTransaction,
+    /// A record began with a valid type but its body could not be decoded.
+    UndecodableRecord,
 }
 
 /// Recovery callbacks must preserve full evidence before publishing either action.
@@ -60,6 +62,7 @@ impl WalRecoverySnapshot<'_> {
             2 => WalPrefixStopReason::ChecksumMismatch,
             3 => WalPrefixStopReason::UnexpectedEof,
             5 => WalPrefixStopReason::InvalidTransaction,
+            6 => WalPrefixStopReason::UndecodableRecord,
             _ => return None,
         };
         Some(VerifiedWalPrefix {
