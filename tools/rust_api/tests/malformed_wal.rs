@@ -94,6 +94,26 @@ mod startup_wal_recovery_tests {
             // Model an unclean exit: the shutdown checkpoint never runs.
             std::process::exit(0);
         }
+        if std::env::var("NMEM_5813_FIXTURE_MODE").unwrap() == "multi-resize-checksummed" {
+            let database = Database::new(&path, config().enable_checksums(true)).unwrap();
+            let connection = Connection::new(&database).unwrap();
+            connection
+                .query(
+                    "CREATE NODE TABLE Wide(id STRING, a STRING, b STRING, c STRING, \
+                     d STRING, e STRING, PRIMARY KEY(id))",
+                )
+                .unwrap();
+            connection.query("CHECKPOINT").unwrap();
+            let columns: Vec<_> = (0..5).map(wide_column).collect();
+            connection
+                .query(&format!(
+                    "CREATE (:Wide {{id:'wide', a:'{}', b:'{}', c:'{}', d:'{}', e:'{}'}})",
+                    columns[0], columns[1], columns[2], columns[3], columns[4]
+                ))
+                .unwrap();
+            assert!(std::fs::metadata(wal(&path)).unwrap().len() > 40 * 1024);
+            std::process::exit(0);
+        }
         let database = Database::new(&path, config()).unwrap();
         let connection = Connection::new(&database).unwrap();
         connection
@@ -134,6 +154,35 @@ mod startup_wal_recovery_tests {
             .map(|row| row[0].to_string())
             .collect();
         assert_eq!(content, [large_content()]);
+    }
+
+    fn wide_column(n: usize) -> String {
+        // 8 KiB per column, distinct per column so a shifted head cannot pass.
+        (0..700)
+            .map(|i| format!("c{n}r{i:05}-xyz "))
+            .collect::<String>()[..8192]
+            .to_owned()
+    }
+
+    #[test]
+    fn checksummed_record_growing_entry_buffer_three_times_replays_intact() {
+        // Five 8 KiB columns in one insertion record grow the 4 KiB entry
+        // buffer to 16, 32 and 64 KiB. Each growth must carry every byte
+        // accumulated so far, on write and on replay.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "multi-resize-checksummed");
+        let database = Database::new(&path, config().enable_checksums(true))
+            .expect("a record that grows the entry buffer repeatedly must replay");
+        let connection = Connection::new(&database).unwrap();
+        let rows: Vec<Vec<String>> = connection
+            .query("MATCH (w:Wide) RETURN w.id, w.a, w.b, w.c, w.d, w.e")
+            .unwrap()
+            .map(|row| row.iter().map(ToString::to_string).collect())
+            .collect();
+        let mut expected = vec!["wide".to_owned()];
+        expected.extend((0..5).map(wide_column));
+        assert_eq!(rows, [expected]);
     }
 
     #[test]
