@@ -256,6 +256,9 @@ mod startup_wal_recovery_tests {
     // or count. The decoder sized an allocation from that untrusted value before
     // reading or checksumming the body, so std::bad_alloc or std::length_error
     // escaped dry replay and copied recovery was refused with no verified prefix.
+    // A count that cannot fit in the bytes left before the record checksum is now
+    // rejected before allocation exactly as reading those bytes would fail: as
+    // the typed UnexpectedEof stop reason a torn record reports.
     //
     // Little-endian read of the bytes 00 00 00 00 00 00 00 15 that followed the
     // damaged record type in the round-11 0.10.105 WAL.
@@ -359,22 +362,22 @@ mod startup_wal_recovery_tests {
 
     #[test]
     fn oversized_catalog_and_alter_lengths_report_verified_prefix_instead_of_bad_alloc() {
-        use lbug::WalPrefixStopReason::UndecodableRecord;
+        use lbug::WalPrefixStopReason::UnexpectedEof;
         // CREATE_CATALOG_ENTRY_RECORD (14): entry type, then the entry name length.
         let create = Record::new(14).u8(0).u64(OVERSIZED);
         damaged_record_reports_verified_prefix(
             "create catalog entry name",
             &create.0,
-            UndecodableRecord,
+            UnexpectedEof,
         );
         // ALTER_TABLE_ENTRY_RECORD (17): alter type, then the table name length.
         let alter = Record::new(17).u8(0).u64(OVERSIZED);
-        damaged_record_reports_verified_prefix("alter table name", &alter.0, UndecodableRecord);
+        damaged_record_reports_verified_prefix("alter table name", &alter.0, UnexpectedEof);
     }
 
     #[test]
     fn oversized_lengths_in_other_record_types_report_verified_prefix() {
-        use lbug::WalPrefixStopReason::{ChecksumMismatch, UndecodableRecord};
+        use lbug::WalPrefixStopReason::{ChecksumMismatch, UnexpectedEof};
         // INDEX_ENTRY (42) inside a CREATE_CATALOG_ENTRY_RECORD: the aux buffer size.
         let index = Record::new(14)
             .u8(42)
@@ -386,15 +389,15 @@ mod startup_wal_recovery_tests {
             .u64(0) // index name
             .u64(0) // property ids
             .u64(OVERSIZED);
-        damaged_record_reports_verified_prefix("index aux buffer", &index.0, UndecodableRecord);
+        damaged_record_reports_verified_prefix("index aux buffer", &index.0, UnexpectedEof);
         // LOAD_EXTENSION_RECORD (100): the extension path length.
         let load = Record::new(100).u64(OVERSIZED);
-        damaged_record_reports_verified_prefix("load extension path", &load.0, UndecodableRecord);
+        damaged_record_reports_verified_prefix("load extension path", &load.0, UnexpectedEof);
         // NODE_UPDATE_RECORD (32) whose vector type is a STRUCT with a huge field count.
         let fields = Record::node_update()
             .logical_type(STRUCT.0, STRUCT.1)
             .u64(OVERSIZED);
-        damaged_record_reports_verified_prefix("struct field count", &fields.0, UndecodableRecord);
+        damaged_record_reports_verified_prefix("struct field count", &fields.0, UnexpectedEof);
         // NODE_UPDATE_RECORD (32) carrying one ARRAY value with a huge element count.
         // Decoding no longer materializes default children from the persisted
         // count; the damaged record is then rejected by its checksum.
@@ -416,13 +419,13 @@ mod startup_wal_recovery_tests {
     fn oversized_counts_bounded_before_allocation_report_verified_prefix() {
         // Not run against the unfixed engine: these counts drove a 32 GiB
         // reservation or a zero-filled 32 GiB resize instead of failing fast.
-        use lbug::WalPrefixStopReason::UndecodableRecord;
+        use lbug::WalPrefixStopReason::UnexpectedEof;
         // TABLE_INSERTION_RECORD (30): table id, table type, row count, vector count.
         let insertion = Record::new(30).u64(0).u8(1).u64(1).u32(u32::MAX);
         damaged_record_reports_verified_prefix(
             "insertion vector count",
             &insertion.0,
-            UndecodableRecord,
+            UnexpectedEof,
         );
         // NODE_UPDATE_RECORD (32) carrying one LIST value with a huge children count.
         let list = Record::node_update()
@@ -434,7 +437,7 @@ mod startup_wal_recovery_tests {
             .logical_type(INT64.0, INT64.1)
             .u8(0) // isNull
             .u32(u32::MAX); // childrenSize
-        damaged_record_reports_verified_prefix("list children count", &list.0, UndecodableRecord);
+        damaged_record_reports_verified_prefix("list children count", &list.0, UnexpectedEof);
     }
 
     fn seed() -> (tempfile::TempDir, PathBuf) {

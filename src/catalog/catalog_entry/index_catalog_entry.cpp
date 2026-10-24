@@ -55,6 +55,7 @@ std::unique_ptr<IndexCatalogEntry> IndexCatalogEntry::deserialize(
         std::move(propertyIDs), nullptr /* auxInfo */);
     uint64_t auxBufferSize = 0;
     deserializer.deserializeValue(auxBufferSize);
+    deserializer.validateSerializedCount(auxBufferSize, 1);
     indexEntry->auxBuffer = std::make_unique<uint8_t[]>(auxBufferSize);
     indexEntry->auxBufferSize = auxBufferSize;
     deserializer.read(indexEntry->auxBuffer.get(), auxBufferSize);

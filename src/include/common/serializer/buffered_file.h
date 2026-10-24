@@ -59,6 +59,11 @@ public:
 
     bool finished() override;
 
+    uint64_t getRemainingBytes() const override {
+        const auto offset = getReadOffset();
+        return offset >= fileSize ? 0 : fileSize - offset;
+    }
+
     uint64_t getReadOffset() const { return fileOffset - bufferSize + bufferOffset; }
     FileInfo* getFileInfo() const { return &fileInfo; }
 

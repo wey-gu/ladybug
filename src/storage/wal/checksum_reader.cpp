@@ -46,6 +46,14 @@ bool ChecksumReader::finished() {
     return deserializer.finished();
 }
 
+uint64_t ChecksumReader::getRemainingBytes() const {
+    const auto remaining = deserializer.getReader()->getRemainingBytes();
+    if (!currentEntrySize.has_value()) {
+        return remaining;
+    }
+    return remaining < sizeof(uint64_t) ? 0 : remaining - sizeof(uint64_t);
+}
+
 void ChecksumReader::onObjectBegin() {
     currentEntrySize.emplace(0);
 }

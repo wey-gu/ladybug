@@ -302,6 +302,8 @@ std::unique_ptr<TableInsertionRecord> TableInsertionRecord::deserialize(Deserial
     if (numVectors == 0) {
         throw RuntimeException("Corrupted WAL record: table insertion has no vectors.");
     }
+    // Each serialized vector carries at least its type and value count.
+    deserializer.validateSerializedCount(numVectors, sizeof(sel_t));
     auto resultChunkState = DataChunkState::getSingleValueDataChunkState();
     valueVectors.reserve(numVectors);
     for (auto i = 0u; i < numVectors; i++) {

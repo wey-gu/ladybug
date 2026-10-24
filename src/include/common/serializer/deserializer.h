@@ -32,6 +32,27 @@ public:
 
     void validateDebuggingInfo(std::string& value, const std::string& expectedVal);
 
+    // Persisted lengths and counts are untrusted input. Reject `count` elements
+    // of at least `minBytesPerElement` serialized bytes each when they cannot fit
+    // in the bytes the reader can still supply. Call before sizing an allocation
+    // from a persisted value. The rejection is the UnexpectedEndOfFileException
+    // that reading those bytes would raise, so a damaged huge length is
+    // classified exactly like a torn record instead of escaping as
+    // std::bad_alloc or std::length_error.
+    void validateSerializedCount(uint64_t count, uint64_t minBytesPerElement) const;
+
+    // Smallest number of bytes one serialized element of T occupies.
+    template<typename T>
+    static constexpr uint64_t minSerializedSize() {
+        if constexpr (std::is_same_v<T, std::string>) {
+            return sizeof(uint64_t);
+        } else if constexpr (requires(Deserializer& deser) { T::deserialize(deser); }) {
+            return 1;
+        } else {
+            return sizeof(T);
+        }
+    }
+
     template<typename T>
     void deserializeOptionalValue(std::unique_ptr<T>& value) {
         bool isNull = false;
@@ -45,6 +66,7 @@ public:
     void deserializeMap(std::map<T1, T2>& values) {
         uint64_t mapSize = 0;
         deserializeValue<uint64_t>(mapSize);
+        validateSerializedCount(mapSize, minSerializedSize<T1>() + 1);
         for (auto i = 0u; i < mapSize; i++) {
             T1 key;
             deserializeValue<T1>(key);
@@ -57,6 +79,7 @@ public:
     void deserializeUnorderedMap(std::unordered_map<T1, T2>& values) {
         uint64_t mapSize = 0;
         deserializeValue<uint64_t>(mapSize);
+        validateSerializedCount(mapSize, minSerializedSize<T1>() + minSerializedSize<T2>());
         for (auto i = 0u; i < mapSize; i++) {
             T1 key;
             deserializeValue<T1>(key);
@@ -70,6 +93,7 @@ public:
     void deserializeUnorderedMapOfPtrs(std::unordered_map<T1, std::unique_ptr<T2>>& values) {
         uint64_t mapSize = 0;
         deserializeValue<uint64_t>(mapSize);
+        validateSerializedCount(mapSize, minSerializedSize<T1>() + 1);
         values.reserve(mapSize);
         for (auto i = 0u; i < mapSize; i++) {
             T1 key;
@@ -80,9 +104,11 @@ public:
     }
 
     template<typename T>
-    void deserializeVector(std::vector<T>& values) {
+    void deserializeVector(std::vector<T>& values,
+        uint64_t minBytesPerElement = minSerializedSize<T>()) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
+        validateSerializedCount(vectorSize, minBytesPerElement);
         values.resize(vectorSize);
         for (auto& value : values) {
             if constexpr (requires(Deserializer& deser) { T::deserialize(deser); }) {
@@ -109,6 +135,7 @@ public:
     void deserializeVectorOfPtrs(std::vector<std::unique_ptr<T>>& values) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
+        validateSerializedCount(vectorSize, 1);
         values.resize(vectorSize);
         for (auto i = 0u; i < vectorSize; i++) {
             values[i] = T::deserialize(*this);
@@ -120,6 +147,7 @@ public:
         std::function<std::unique_ptr<T>(Deserializer&)> deserializeFunc) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
+        validateSerializedCount(vectorSize, 1);
         values.resize(vectorSize);
         for (auto i = 0u; i < vectorSize; i++) {
             values[i] = deserializeFunc(*this);
@@ -130,6 +158,7 @@ public:
     void deserializeUnorderedSet(std::unordered_set<T>& values) {
         uint64_t setSize = 0;
         deserializeValue(setSize);
+        validateSerializedCount(setSize, minSerializedSize<T>());
         for (auto i = 0u; i < setSize; i++) {
             T value;
             deserializeValue<T>(value);

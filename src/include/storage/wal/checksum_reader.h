@@ -16,6 +16,8 @@ public:
 
     void read(uint8_t* data, uint64_t size) override;
     bool finished() override;
+    // Inside a record, the stored checksum must still follow the body.
+    uint64_t getRemainingBytes() const override;
 
     void onObjectBegin() override;
     // Reads the stored checksum

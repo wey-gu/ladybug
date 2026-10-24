@@ -1,6 +1,7 @@
 #include "storage/wal/wal_replayer.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 #include "binder/binder.h"
 #include "catalog/catalog_entry/scalar_macro_catalog_entry.h"
@@ -93,7 +94,16 @@ static uint64_t getReadOffset(Deserializer& deSer, bool enableChecksums) {
 // bytes (KU_UNREACHABLE/assertions and decoder RuntimeExceptions) become a typed
 // cause so strict recovery can offer the verified committed prefix instead of
 // refusing on an unclassified internal error. Causes that already carry a type,
-// and environmental failures (I/O, memory, interruption), keep their meaning.
+// and environmental failures (I/O, buffer-pool memory, interruption), keep their
+// meaning.
+//
+// Persisted lengths and counts are bounded by the bytes left in the file and
+// before the record checksum, so a damaged huge length fails like a torn record
+// (UnexpectedEndOfFileException) before it sizes an allocation
+// (https://github.com/nowledge-co/mem/issues/8218). std::length_error can only
+// come from a size computed from decoded bytes and is typed as a last resort.
+// std::bad_alloc is not: it cannot be told apart from real memory exhaustion,
+// which never authorizes prefix recovery.
 static std::unique_ptr<WALRecord> decodeWALRecord(Deserializer& deserializer,
     const main::ClientContext& clientContext) {
     try {
@@ -102,10 +112,15 @@ static std::unique_ptr<WALRecord> decodeWALRecord(Deserializer& deserializer,
         throw;
     } catch (const UnexpectedEndOfFileException&) {
         throw;
+    } catch (const UndecodableWalRecordException&) {
+        throw;
     } catch (const InternalException& error) {
         throw UndecodableWalRecordException(error.what());
     } catch (const RuntimeException& error) {
         throw UndecodableWalRecordException(error.what());
+    } catch (const std::length_error& error) {
+        throw UndecodableWalRecordException(
+            std::string{"decoded length exceeds the supported size: "} + error.what());
     }
 }
 
