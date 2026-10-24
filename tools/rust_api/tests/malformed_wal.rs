@@ -251,6 +251,192 @@ mod startup_wal_recovery_tests {
         assert_eq!(memory_ids(&database), ["durable", "recent1", "recent2"]);
     }
 
+    // https://github.com/nowledge-co/mem/issues/8218: a damaged record head can
+    // carry a valid record type followed by bytes that decode as a huge length
+    // or count. The decoder sized an allocation from that untrusted value before
+    // reading or checksumming the body, so std::bad_alloc or std::length_error
+    // escaped dry replay and copied recovery was refused with no verified prefix.
+    //
+    // Little-endian read of the bytes 00 00 00 00 00 00 00 15 that followed the
+    // damaged record type in the round-11 0.10.105 WAL.
+    const OVERSIZED: u64 = 0x1500_0000_0000_0000;
+
+    struct Record(Vec<u8>);
+
+    impl Record {
+        fn new(record_type: u8) -> Self {
+            Self(vec![record_type])
+        }
+        fn u8(mut self, value: u8) -> Self {
+            self.0.push(value);
+            self
+        }
+        fn u32(mut self, value: u32) -> Self {
+            self.0.extend_from_slice(&value.to_le_bytes());
+            self
+        }
+        fn u64(mut self, value: u64) -> Self {
+            self.0.extend_from_slice(&value.to_le_bytes());
+            self
+        }
+        // LogicalTypeID, PhysicalTypeID, TypeCategory::INTERNAL.
+        fn logical_type(self, logical: u8, physical: u8) -> Self {
+            self.u8(logical).u8(physical).u8(0)
+        }
+        // NODE_UPDATE_RECORD head: table id, column id, node offset.
+        fn node_update() -> Self {
+            Self::new(32).u64(0).u32(0).u64(0)
+        }
+    }
+
+    const INT64: (u8, u8) = (23, 2);
+    const LIST: (u8, u8) = (52, 22);
+    const ARRAY: (u8, u8) = (53, 23);
+    const STRUCT: (u8, u8) = (54, 24);
+
+    /// Overwrites the head of the last committed transaction with `record` and
+    /// requires dry replay to report the two earlier transactions as the verified
+    /// prefix, then proves that prefix replays on a copy.
+    fn damaged_record_reports_verified_prefix(
+        label: &str,
+        record: &[u8],
+        expected: lbug::WalPrefixStopReason,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("graph.db");
+        child(&path, "prefix-checksummed");
+        let ends: Vec<u64> = std::fs::read_to_string(directory.path().join("commit-ends"))
+            .unwrap()
+            .lines()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let mut bytes = std::fs::read(wal(&path)).unwrap();
+        let start = usize::try_from(ends[1]).unwrap();
+        let end = usize::try_from(ends[2]).unwrap();
+        assert!(
+            record.len() < end - start,
+            "{label}: crafted record must stay inside the transaction"
+        );
+        bytes[start..start + record.len()].copy_from_slice(record);
+        std::fs::write(wal(&path), &bytes).unwrap();
+        let original_main = std::fs::read(&path).unwrap();
+        let observed = RefCell::new(None);
+        let error = Database::new_with_malformed_wal_recovery(
+            &path,
+            config().enable_checksums(true),
+            |snapshot| {
+                *observed.borrow_mut() = snapshot.verified_prefix();
+                false
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::MalformedWalRecoveryFailed(_)),
+            "{label}: {error}"
+        );
+        let prefix = observed
+            .into_inner()
+            .unwrap_or_else(|| panic!("{label}: no native verified boundary: {error}"));
+        assert_eq!(prefix.stop_reason, expected, "{label}");
+        assert_eq!(prefix.commit_end, ends[1], "{label}");
+        assert_eq!(prefix.transaction_count, 2, "{label}");
+        assert_eq!(prefix.failed_record_start, ends[1], "{label}");
+        assert_eq!(prefix.wal_size, bytes.len() as u64, "{label}");
+        assert_eq!(std::fs::read(&path).unwrap(), original_main, "{label}");
+        assert_eq!(std::fs::read(wal(&path)).unwrap(), bytes, "{label}");
+        let candidate = directory.path().join("candidate");
+        std::fs::create_dir(&candidate).unwrap();
+        let copied = candidate.join("graph.db");
+        std::fs::write(&copied, &original_main).unwrap();
+        std::fs::write(wal(&copied), &bytes[..start]).unwrap();
+        let database = Database::new(&copied, config().enable_checksums(true)).unwrap();
+        assert_eq!(
+            memory_ids(&database),
+            ["durable", "recent1", "recent2"],
+            "{label}"
+        );
+    }
+
+    #[test]
+    fn oversized_catalog_and_alter_lengths_report_verified_prefix_instead_of_bad_alloc() {
+        use lbug::WalPrefixStopReason::UndecodableRecord;
+        // CREATE_CATALOG_ENTRY_RECORD (14): entry type, then the entry name length.
+        let create = Record::new(14).u8(0).u64(OVERSIZED);
+        damaged_record_reports_verified_prefix(
+            "create catalog entry name",
+            &create.0,
+            UndecodableRecord,
+        );
+        // ALTER_TABLE_ENTRY_RECORD (17): alter type, then the table name length.
+        let alter = Record::new(17).u8(0).u64(OVERSIZED);
+        damaged_record_reports_verified_prefix("alter table name", &alter.0, UndecodableRecord);
+    }
+
+    #[test]
+    fn oversized_lengths_in_other_record_types_report_verified_prefix() {
+        use lbug::WalPrefixStopReason::{ChecksumMismatch, UndecodableRecord};
+        // INDEX_ENTRY (42) inside a CREATE_CATALOG_ENTRY_RECORD: the aux buffer size.
+        let index = Record::new(14)
+            .u8(42)
+            .u64(0) // name
+            .u64(1) // oid
+            .u8(0) // hasParent
+            .u64(0) // index type
+            .u64(0) // table id
+            .u64(0) // index name
+            .u64(0) // property ids
+            .u64(OVERSIZED);
+        damaged_record_reports_verified_prefix("index aux buffer", &index.0, UndecodableRecord);
+        // LOAD_EXTENSION_RECORD (100): the extension path length.
+        let load = Record::new(100).u64(OVERSIZED);
+        damaged_record_reports_verified_prefix("load extension path", &load.0, UndecodableRecord);
+        // NODE_UPDATE_RECORD (32) whose vector type is a STRUCT with a huge field count.
+        let fields = Record::node_update()
+            .logical_type(STRUCT.0, STRUCT.1)
+            .u64(OVERSIZED);
+        damaged_record_reports_verified_prefix("struct field count", &fields.0, UndecodableRecord);
+        // NODE_UPDATE_RECORD (32) carrying one ARRAY value with a huge element count.
+        // Decoding no longer materializes default children from the persisted
+        // count; the damaged record is then rejected by its checksum.
+        let array = Record::node_update()
+            .logical_type(ARRAY.0, ARRAY.1)
+            .logical_type(INT64.0, INT64.1)
+            .u64(OVERSIZED)
+            .u64(1) // num_values
+            .u8(0) // null flag
+            .logical_type(ARRAY.0, ARRAY.1)
+            .logical_type(INT64.0, INT64.1)
+            .u64(OVERSIZED)
+            .u8(0) // isNull
+            .u32(0); // childrenSize
+        damaged_record_reports_verified_prefix("array default value", &array.0, ChecksumMismatch);
+    }
+
+    #[test]
+    fn oversized_counts_bounded_before_allocation_report_verified_prefix() {
+        // Not run against the unfixed engine: these counts drove a 32 GiB
+        // reservation or a zero-filled 32 GiB resize instead of failing fast.
+        use lbug::WalPrefixStopReason::UndecodableRecord;
+        // TABLE_INSERTION_RECORD (30): table id, table type, row count, vector count.
+        let insertion = Record::new(30).u64(0).u8(1).u64(1).u32(u32::MAX);
+        damaged_record_reports_verified_prefix(
+            "insertion vector count",
+            &insertion.0,
+            UndecodableRecord,
+        );
+        // NODE_UPDATE_RECORD (32) carrying one LIST value with a huge children count.
+        let list = Record::node_update()
+            .logical_type(LIST.0, LIST.1)
+            .logical_type(INT64.0, INT64.1)
+            .u64(1) // num_values
+            .u8(0) // null flag
+            .logical_type(LIST.0, LIST.1)
+            .logical_type(INT64.0, INT64.1)
+            .u8(0) // isNull
+            .u32(u32::MAX); // childrenSize
+        damaged_record_reports_verified_prefix("list children count", &list.0, UndecodableRecord);
+    }
+
     fn seed() -> (tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("graph.db");
