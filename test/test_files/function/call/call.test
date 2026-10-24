@@ -289,6 +289,9 @@ Binder exception: a.fName has type PROPERTY but LITERAL,PARAMETER,PATTERN was ex
 -STATEMENT CALL bm_info() RETURN mem_limit
 ---- 1
 1073741824
+-STATEMENT CALL bm_info() RETURN non_evictable_mem_usage <= mem_usage
+---- 1
+True
 
 -LOG ShowLoadedExtension
 -STATEMENT CALL SHOW_LOADED_EXTENSIONS() WHERE `extension source` <> 'STATIC LINK' RETURN *
