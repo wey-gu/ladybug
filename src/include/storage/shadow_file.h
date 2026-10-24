@@ -7,6 +7,9 @@ namespace lbug {
 namespace storage {
 
 struct ShadowPageRecord {
+    // ShadowPageRecord::serialize: file index (u32) and page index (u32).
+    static constexpr uint64_t MIN_SERIALIZED_SIZE = sizeof(uint32_t) + sizeof(uint32_t);
+
     common::file_idx_t originalFileIdx = common::INVALID_PAGE_IDX;
     common::page_idx_t originalPageIdx = common::INVALID_PAGE_IDX;
 

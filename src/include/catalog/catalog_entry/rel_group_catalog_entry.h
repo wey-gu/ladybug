@@ -16,6 +16,10 @@ struct RelGroupToCypherInfo final : ToCypherInfo {
 };
 
 struct RelTableCatalogInfo {
+    // RelTableCatalogInfo::serialize: NodeTableIDPair (src and dst table ids)
+    // and the oid, each a u64.
+    static constexpr uint64_t MIN_SERIALIZED_SIZE = 3 * sizeof(uint64_t);
+
     NodeTableIDPair nodePair;
     common::oid_t oid = common::INVALID_OID;
 

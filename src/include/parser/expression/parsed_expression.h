@@ -31,6 +31,10 @@ class LBUG_API ParsedExpression {
     friend class ParsedExpressionChildrenVisitor;
 
 public:
+    // ParsedExpression::serialize: type (one byte), alias and rawName (u64
+    // length prefixes) and the children count (u64); serializeInternal adds more.
+    static constexpr uint64_t MIN_SERIALIZED_SIZE = 1 + 3 * sizeof(uint64_t);
+
     ParsedExpression(common::ExpressionType type, std::unique_ptr<ParsedExpression> child,
         std::string rawName);
     ParsedExpression(common::ExpressionType type, std::unique_ptr<ParsedExpression> left,

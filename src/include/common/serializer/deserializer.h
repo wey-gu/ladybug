@@ -39,12 +39,22 @@ public:
     // that reading those bytes would raise, so a damaged huge length is
     // classified exactly like a torn record instead of escaping as
     // std::bad_alloc or std::length_error.
+    //
+    // Allocation bound: a leaf byte buffer (string, index aux buffer) is sized
+    // exactly from a validated length, so it is at most the remaining bytes.
+    // Containers below never reserve from a persisted count; they grow only as
+    // elements are actually decoded, so their storage is at most twice
+    // sizeof(T) per decoded element, and each decoded element consumed at least
+    // minSerializedSize<T>() bytes.
     void validateSerializedCount(uint64_t count, uint64_t minBytesPerElement) const;
 
-    // Smallest number of bytes one serialized element of T occupies.
+    // Smallest number of bytes one serialized element of T occupies. A type
+    // whose serialize side guarantees more declares MIN_SERIALIZED_SIZE.
     template<typename T>
     static constexpr uint64_t minSerializedSize() {
-        if constexpr (std::is_same_v<T, std::string>) {
+        if constexpr (requires { T::MIN_SERIALIZED_SIZE; }) {
+            return T::MIN_SERIALIZED_SIZE;
+        } else if constexpr (std::is_same_v<T, std::string>) {
             return sizeof(uint64_t);
         } else if constexpr (requires(Deserializer& deser) { T::deserialize(deser); }) {
             return 1;
@@ -66,7 +76,7 @@ public:
     void deserializeMap(std::map<T1, T2>& values) {
         uint64_t mapSize = 0;
         deserializeValue<uint64_t>(mapSize);
-        validateSerializedCount(mapSize, minSerializedSize<T1>() + 1);
+        validateSerializedCount(mapSize, minSerializedSize<T1>() + minSerializedSize<T2>());
         for (auto i = 0u; i < mapSize; i++) {
             T1 key;
             deserializeValue<T1>(key);
@@ -93,8 +103,7 @@ public:
     void deserializeUnorderedMapOfPtrs(std::unordered_map<T1, std::unique_ptr<T2>>& values) {
         uint64_t mapSize = 0;
         deserializeValue<uint64_t>(mapSize);
-        validateSerializedCount(mapSize, minSerializedSize<T1>() + 1);
-        values.reserve(mapSize);
+        validateSerializedCount(mapSize, minSerializedSize<T1>() + minSerializedSize<T2>());
         for (auto i = 0u; i < mapSize; i++) {
             T1 key;
             deserializeValue<T1>(key);
@@ -104,17 +113,16 @@ public:
     }
 
     template<typename T>
-    void deserializeVector(std::vector<T>& values,
-        uint64_t minBytesPerElement = minSerializedSize<T>()) {
+    void deserializeVector(std::vector<T>& values) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
-        validateSerializedCount(vectorSize, minBytesPerElement);
-        values.resize(vectorSize);
-        for (auto& value : values) {
+        validateSerializedCount(vectorSize, minSerializedSize<T>());
+        values.clear();
+        for (auto i = 0u; i < vectorSize; i++) {
             if constexpr (requires(Deserializer& deser) { T::deserialize(deser); }) {
-                value = T::deserialize(*this);
+                values.push_back(T::deserialize(*this));
             } else {
-                deserializeValue(value);
+                deserializeValue(values.emplace_back());
             }
         }
     }
@@ -135,10 +143,10 @@ public:
     void deserializeVectorOfPtrs(std::vector<std::unique_ptr<T>>& values) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
-        validateSerializedCount(vectorSize, 1);
-        values.resize(vectorSize);
+        validateSerializedCount(vectorSize, minSerializedSize<T>());
+        values.clear();
         for (auto i = 0u; i < vectorSize; i++) {
-            values[i] = T::deserialize(*this);
+            values.push_back(T::deserialize(*this));
         }
     }
 
@@ -147,10 +155,10 @@ public:
         std::function<std::unique_ptr<T>(Deserializer&)> deserializeFunc) {
         uint64_t vectorSize = 0;
         deserializeValue(vectorSize);
-        validateSerializedCount(vectorSize, 1);
-        values.resize(vectorSize);
+        validateSerializedCount(vectorSize, minSerializedSize<T>());
+        values.clear();
         for (auto i = 0u; i < vectorSize; i++) {
-            values[i] = deserializeFunc(*this);
+            values.push_back(deserializeFunc(*this));
         }
     }
 

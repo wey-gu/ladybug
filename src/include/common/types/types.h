@@ -496,6 +496,10 @@ private:
 
 class StructField {
 public:
+    // StructField::serialize: name (u64 length prefix), then LogicalType::serialize
+    // (type id, physical type, category; one byte each).
+    static constexpr uint64_t MIN_SERIALIZED_SIZE = sizeof(uint64_t) + 3 * sizeof(uint8_t);
+
     StructField() : type{LogicalType()} {}
     StructField(std::string name, LogicalType type)
         : name{std::move(name)}, type{std::move(type)} {};

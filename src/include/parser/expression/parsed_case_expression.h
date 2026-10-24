@@ -7,6 +7,9 @@ namespace lbug {
 namespace parser {
 
 struct ParsedCaseAlternative {
+    // ParsedCaseAlternative::serialize: the when and then expressions.
+    static constexpr uint64_t MIN_SERIALIZED_SIZE = 2 * ParsedExpression::MIN_SERIALIZED_SIZE;
+
     std::unique_ptr<ParsedExpression> whenExpression;
     std::unique_ptr<ParsedExpression> thenExpression;
 

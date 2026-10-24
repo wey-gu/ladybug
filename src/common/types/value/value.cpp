@@ -910,13 +910,14 @@ std::unique_ptr<Value> Value::deserialize(Deserializer& deserializer) {
     case PhysicalTypeID::ARRAY:
     case PhysicalTypeID::LIST:
     case PhysicalTypeID::STRUCT: {
-        // Each child carries at least a LogicalType header, a null flag and its
-        // own children count.
+        // Value::serialize writes each child as a LogicalType header (three
+        // bytes), a null flag and its own u32 children count. Grow only as
+        // children are decoded; never reserve from the persisted count.
         deserializer.validateSerializedCount(val->childrenSize,
             3 * sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t));
-        val->children.resize(val->childrenSize);
+        val->children.clear();
         for (auto i = 0u; i < val->childrenSize; i++) {
-            val->children[i] = deserialize(deserializer);
+            val->children.push_back(deserialize(deserializer));
         }
     } break;
     case PhysicalTypeID::ANY: {

@@ -46,9 +46,11 @@ std::unique_ptr<ScalarMacroFunction> ScalarMacroFunction::deserialize(Deserializ
     default_macro_args defaultArgs;
     uint64_t vectorSize = 0;
     deserializer.deserializeValue(vectorSize);
-    // Each default argument carries at least its name length.
-    deserializer.validateSerializedCount(vectorSize, sizeof(uint64_t));
-    defaultArgs.reserve(vectorSize);
+    // ScalarMacroFunction::serialize writes each default argument as its name
+    // (u64 length prefix) and a ParsedExpression. Grow only as arguments are
+    // decoded.
+    deserializer.validateSerializedCount(vectorSize,
+        sizeof(uint64_t) + parser::ParsedExpression::MIN_SERIALIZED_SIZE);
     for (auto i = 0u; i < vectorSize; i++) {
         std::string key;
         deserializer.deserializeValue(key);

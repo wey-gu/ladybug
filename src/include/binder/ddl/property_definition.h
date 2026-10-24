@@ -20,6 +20,11 @@ private:
 };
 
 struct LBUG_API PropertyDefinition {
+    // PropertyDefinition::serialize: name (u64 length prefix), LogicalType (three
+    // bytes) and the default ParsedExpression.
+    static constexpr uint64_t MIN_SERIALIZED_SIZE =
+        sizeof(uint64_t) + 3 * sizeof(uint8_t) + parser::ParsedExpression::MIN_SERIALIZED_SIZE;
+
     ColumnDefinition columnDefinition;
     std::unique_ptr<parser::ParsedExpression> defaultExpr;
 

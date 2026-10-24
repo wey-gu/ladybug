@@ -516,10 +516,9 @@ bool StructTypeInfo::operator==(const ExtraTypeInfo& other) const {
 
 std::unique_ptr<ExtraTypeInfo> StructTypeInfo::deserialize(Deserializer& deserializer) {
     std::vector<StructField> fields;
-    // Each field carries at least its name length and a LogicalType header
-    // (type id, physical type, category). Every field also becomes a child
-    // vector, so bound the fan-out by the bytes that can actually follow.
-    deserializer.deserializeVector(fields, sizeof(uint64_t) + 3 * sizeof(uint8_t));
+    // Bounded by StructField::MIN_SERIALIZED_SIZE. Every field also becomes a
+    // child vector, so this also bounds the STRUCT fan-out.
+    deserializer.deserializeVector(fields);
     return std::make_unique<StructTypeInfo>(std::move(fields));
 }
 
