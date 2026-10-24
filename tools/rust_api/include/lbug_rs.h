@@ -136,7 +136,7 @@ std::unique_ptr<lbug::main::Database> new_database_with_malformed_wal_recovery(
     bool enableCompression, bool readOnly, uint64_t maxDBSize, bool autoCheckpoint,
     int64_t checkpointThreshold, bool throwOnWalReplayFailure, bool enableChecksums,
     rust::Fn<uint8_t(size_t, const WalRecoveryContext&)> recover,
-    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context);
+    rust::Fn<bool(size_t, const WalRecoveryContext&)> admit, size_t context, bool requireExisting);
 
 void database_set_logging_level(lbug::main::Database& database, const std::string& level);
 rust::String database_identity(lbug::main::Database& database);

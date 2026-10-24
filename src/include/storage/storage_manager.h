@@ -65,7 +65,8 @@ public:
     void deserialize(main::ClientContext* context, const catalog::Catalog* catalog,
         common::Deserializer& deSer);
 
-    void initDataFileHandle(common::VirtualFileSystem* vfs, main::ClientContext* context);
+    void initDataFileHandle(common::VirtualFileSystem* vfs, main::ClientContext* context,
+        bool requireExisting = false);
 
     // If the database header hasn't been created yet, calling these methods will create + return
     // the header

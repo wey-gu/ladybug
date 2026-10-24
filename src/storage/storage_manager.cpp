@@ -37,7 +37,8 @@ StorageManager::StorageManager(const std::string& databasePath, bool readOnly, b
 
 StorageManager::~StorageManager() = default;
 
-void StorageManager::initDataFileHandle(VirtualFileSystem* vfs, main::ClientContext* context) {
+void StorageManager::initDataFileHandle(VirtualFileSystem* vfs, main::ClientContext* context,
+    bool requireExisting) {
     if (dataFH) {
         return;
     }
@@ -45,11 +46,16 @@ void StorageManager::initDataFileHandle(VirtualFileSystem* vfs, main::ClientCont
         dataFH = memoryManager.getBufferManager()->getFileHandle(databasePath,
             FileHandle::O_PERSISTENT_FILE_IN_MEM, vfs, context);
     } else {
-        auto flag = readOnly ? FileHandle::O_PERSISTENT_FILE_READ_ONLY :
-                               FileHandle::O_PERSISTENT_FILE_CREATE_NOT_EXISTS;
+        auto flag = readOnly ? FileHandle::O_PERSISTENT_FILE_READ_ONLY : uint8_t{0};
+        if (!readOnly && !requireExisting) {
+            flag |= FileHandle::O_PERSISTENT_FILE_CREATE_NOT_EXISTS;
+        }
         flag |= FileHandle::O_LOCKED_PERSISTENT_FILE;
         dataFH = memoryManager.getBufferManager()->getFileHandle(databasePath, flag, vfs, context);
         if (dataFH->getNumPages() == 0) {
+            if (requireExisting) {
+                throw RuntimeException("Recovery requires an existing non-empty database main.");
+            }
             if (!readOnly) {
                 // Reserve the first page for the database header.
                 dataFH->getPageManager()->allocatePage();

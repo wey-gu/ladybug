@@ -819,3 +819,65 @@ mod startup_wal_recovery_tests {
         assert_eq!(std::fs::read(wal(&path)).unwrap(), before);
     }
 }
+
+#[test]
+fn typed_recovery_never_creates_or_initializes_a_missing_or_truncated_main() {
+    for missing in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("retained.db");
+        drop(
+            lbug::Database::new(
+                &path,
+                lbug::SystemConfig::default()
+                    .buffer_pool_size(16 * 1024 * 1024)
+                    .max_db_size(256 * 1024 * 1024),
+            )
+            .unwrap(),
+        );
+        if missing {
+            std::fs::remove_file(&path).unwrap();
+        } else {
+            std::fs::write(&path, b"").unwrap();
+        }
+        let called = std::cell::Cell::new(false);
+        let result = lbug::Database::new_existing_with_admission(
+            &path,
+            lbug::SystemConfig::default()
+                .buffer_pool_size(16 * 1024 * 1024)
+                .max_db_size(256 * 1024 * 1024),
+            |_| {
+                called.set(true);
+                false
+            },
+        );
+        assert!(result.is_err());
+        assert!(!called.get());
+        if missing {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+        }
+    }
+}
+
+#[test]
+fn ordinary_recovery_constructor_still_supports_fresh_creation() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fresh.db");
+    let called = std::cell::Cell::new(false);
+    let database = lbug::Database::new_with_wal_recovery_admission(
+        &path,
+        lbug::SystemConfig::default()
+            .buffer_pool_size(16 * 1024 * 1024)
+            .max_db_size(256 * 1024 * 1024),
+        |_| {
+            called.set(true);
+            true
+        },
+        |_| false,
+    )
+    .unwrap();
+    assert!(called.get());
+    assert!(std::fs::metadata(&path).unwrap().len() > 0);
+    drop(database);
+}

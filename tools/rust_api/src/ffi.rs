@@ -212,6 +212,7 @@ pub(crate) mod ffi {
             recover: fn(usize, &WalRecoveryContext) -> u8,
             admit: fn(usize, &WalRecoveryContext) -> bool,
             context: usize,
+            require_existing: bool,
         ) -> Result<UniquePtr<Database>>;
 
     }
