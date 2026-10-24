@@ -212,6 +212,10 @@ public:
 
     uint64_t getMemoryLimit() const { return bufferPoolSize; }
     uint64_t getUsedMemory() const { return usedMemory; }
+    // Memory that eviction cannot reclaim (malloc-backed MemoryManager buffers). Committed
+    // but uncheckpointed table state (MVCC update chains, in-memory node groups) is held here
+    // until the next checkpoint.
+    uint64_t getNonEvictableMemory() const { return nonEvictableMemory; }
 
     void getSpillerOrSkip(std::function<void(Spiller&)> func) {
         if (spiller) {
