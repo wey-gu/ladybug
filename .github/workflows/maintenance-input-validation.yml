@@ -10,6 +10,59 @@ permissions:
   contents: read
 
 jobs:
+  json-string-rust-api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Rust API toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt
+      - name: Check scalar fixture formatting
+        run: rustfmt +1.98.1 --edition 2021 --check tools/rust_api/tests/json_get_string.rs
+      - name: Strict scalar fixture lint
+        run: >-
+          cargo +1.98.1 clippy --manifest-path tools/rust_api/Cargo.toml
+          --locked --no-default-features --test json_get_string -j 2 -- -D warnings
+      - name: Reuse the completed native build for the test binary
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          source = Path.cwd().resolve()
+          trees = []
+          for cache in Path('tools/rust_api/target/debug/build').glob('lbug-*/out/build/CMakeCache.txt'):
+              entries = dict(line.split('=', 1) for line in cache.read_text().splitlines()
+                             if line and not line.startswith(('#', '//')) and '=' in line)
+              if (entries.get('CMAKE_BUILD_TYPE:STRING') == 'Debug'
+                      and Path(entries.get('CMAKE_HOME_DIRECTORY:INTERNAL', '')).resolve() == source):
+                  trees.append(cache.parent.resolve())
+          if len(trees) != 1:
+              raise SystemExit(f'Expected one completed native build, found {trees}')
+          tree = trees[0]
+          if not (tree / 'src/liblbug.a').is_file():
+              raise SystemExit('Completed native static library is missing')
+          receipt = {'source_head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                     'profile': 'Debug', 'cmake_tree': str(tree)}
+          Path('json-native-build-reuse.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          with Path(os.environ['GITHUB_ENV']).open('a') as output:
+              output.write(f'LBUG_CMAKE_BUILD_DIR={tree}\n')
+          print(json.dumps(receipt))
+          PY
+      - name: Execute statically linked JSON scalar queries
+        run: >-
+          cargo +1.98.1 test --manifest-path tools/rust_api/Cargo.toml
+          --locked --no-default-features --test json_get_string -j 2 -- --test-threads=1
+      - name: Retain native build reuse receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: json-native-build-reuse
+          path: json-native-build-reuse.json
+          if-no-files-found: warn
+
   native-release:
     strategy:
       fail-fast: false

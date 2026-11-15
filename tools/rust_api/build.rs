@@ -105,6 +105,36 @@ fn link_libraries() {
     }
 }
 
+fn prebuilt_cmake_tree(source: &Path, profile: &str) -> Option<PathBuf> {
+    println!("cargo:rerun-if-env-changed=LBUG_CMAKE_BUILD_DIR");
+    let path = PathBuf::from(env::var_os("LBUG_CMAKE_BUILD_DIR")?);
+    let path = path
+        .canonicalize()
+        .expect("prebuilt CMake directory exists");
+    let cache_path = path.join("CMakeCache.txt");
+    let cache = std::fs::read_to_string(&cache_path).expect("read prebuilt CMake cache");
+    let entry = |name: &str| {
+        cache
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .unwrap_or_else(|| panic!("prebuilt CMake cache is missing {name}"))
+    };
+    assert_eq!(
+        entry("CMAKE_BUILD_TYPE:STRING="),
+        profile,
+        "prebuilt CMake profile must match Cargo's profile"
+    );
+    assert_eq!(
+        Path::new(entry("CMAKE_HOME_DIRECTORY:INTERNAL="))
+            .canonicalize()
+            .unwrap(),
+        source.canonicalize().unwrap(),
+        "prebuilt CMake source must match this crate"
+    );
+    println!("cargo:rerun-if-changed={}", cache_path.display());
+    Some(path)
+}
+
 fn build_bundled_cmake() -> Vec<PathBuf> {
     let lbug_root = {
         let root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("lbug-src");
@@ -132,16 +162,20 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
     if let Ok(jobs) = std::env::var("NUM_JOBS") {
         std::env::set_var("CMAKE_BUILD_PARALLEL_LEVEL", jobs);
     }
-    let build_dir = build.build();
+    // Cargo check and test can use different OUT_DIRs. An explicit completed
+    // tree reuses the same native build without changing bundled FFI or profile.
+    let build_tree = prebuilt_cmake_tree(&lbug_root, build.get_profile())
+        .unwrap_or_else(|| build.build().join("build"));
 
-    let lbug_lib_path = build_dir.join("build").join("src");
+    let lbug_lib_path = build_tree.join("src");
+    println!("cargo:rerun-if-changed={}", lbug_lib_path.display());
     println!("cargo:rustc-link-search=native={}", lbug_lib_path.display());
 
     // Stage the statically-linked builtin extension archives (our fork's
     // extension_config.cmake builds them as lib<name>_static.lbug_extension
     // under <source>/extension/<name>/build) into OUT_DIR with standard
     // lib*.a names so rustc-link-lib can find them.
-    let ext_lib_dir = build_dir.join("builtin_extensions");
+    let ext_lib_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("builtin_extensions");
     std::fs::create_dir_all(&ext_lib_dir).expect("create builtin_extensions dir");
     for ext in ["fts", "algo", "json", "vector"] {
         let src = lbug_root
@@ -150,6 +184,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
             .join("build")
             .join(format!("lib{ext}_static.lbug_extension"));
         let dst = ext_lib_dir.join(format!("liblbug_{ext}_static_extension.a"));
+        println!("cargo:rerun-if-changed={}", src.display());
         if src.exists() {
             std::fs::copy(&src, &dst)
                 .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", src.display(), dst.display()));
@@ -164,8 +199,7 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
     println!("cargo:rustc-link-search=native={}", ext_lib_dir.display());
 
     // fts depends on the bundled snowball stemmer (built out-of-source).
-    let snowball_dir = build_dir
-        .join("build")
+    let snowball_dir = build_tree
         .join("extension")
         .join("fts")
         .join("third_party")
@@ -191,15 +225,14 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
         "simsimd",
         "yyjson",
     ] {
-        let lib_path = build_dir
-            .join("build")
+        let lib_path = build_tree
             .join("third_party")
             .join(dir)
             .canonicalize()
             .unwrap_or_else(|_| {
                 panic!(
-                    "Could not find {}/build/third_party/{}",
-                    build_dir.display(),
+                    "Could not find {}/third_party/{}",
+                    build_tree.display(),
                     dir
                 )
             });
@@ -208,8 +241,8 @@ fn build_bundled_cmake() -> Vec<PathBuf> {
 
     vec![
         lbug_root.join("src/include"),
-        build_dir.join("build/src"),
-        build_dir.join("build/src/include"),
+        build_tree.join("src"),
+        build_tree.join("src/include"),
         lbug_root.join("third_party/nlohmann_json"),
         lbug_root.join("third_party/fastpfor"),
         lbug_root.join("third_party/alp/include"),

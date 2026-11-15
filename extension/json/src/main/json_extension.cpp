@@ -28,6 +28,7 @@ static void addJsonCreationFunction(main::Database& db) {
 
 static void addJsonExtractFunction(main::Database& db) {
     ExtensionUtils::addScalarFunc<JsonExtractFunction>(db);
+    ExtensionUtils::addScalarFunc<JsonGetStringFunction>(db);
 }
 
 static void addJsonScalarFunction(main::Database& db) {
