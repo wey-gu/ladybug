@@ -68,6 +68,7 @@ pub use database::{
     WalRecoverySnapshot,
 };
 pub use error::Error;
+pub use observer::StatementObserver;
 pub use logical_type::LogicalType;
 #[cfg(feature = "arrow")]
 pub use query_result::ArrowIterator;
@@ -79,6 +80,7 @@ mod database;
 mod error;
 mod ffi;
 mod logical_type;
+mod observer;
 mod query_result;
 mod value;
 

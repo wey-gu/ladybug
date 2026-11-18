@@ -101,6 +101,7 @@ impl WalRecoverySnapshot<'_> {
 /// The Database class is the main class of `LbugDB`. It manages all database components.
 pub struct Database {
     pub(crate) db: UnsafeCell<UniquePtr<ffi::Database>>,
+    observer: crate::observer::ObserverSlot,
 }
 
 unsafe impl Send for Database {}
@@ -211,6 +212,26 @@ impl SystemConfig {
 pub(crate) const IN_MEMORY_DB_NAME: &str = ":memory:";
 
 impl Database {
+    /// Register (or with `None`, remove) the observer called after every
+    /// successful statement on this database's connections. See
+    /// [`crate::StatementObserver`].
+    pub fn set_statement_observer(
+        &self,
+        observer: Option<std::sync::Arc<dyn crate::StatementObserver>>,
+    ) {
+        *self
+            .observer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = observer;
+    }
+
+    pub(crate) fn statement_observer(&self) -> Option<std::sync::Arc<dyn crate::StatementObserver>> {
+        self.observer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Creates a database object
     ///
     /// # Arguments:
@@ -231,6 +252,7 @@ impl Database {
                 config.throw_on_wal_replay_failure,
                 config.enable_checksums,
             )?),
+            observer: Default::default(),
         })
     }
 
@@ -273,6 +295,7 @@ impl Database {
         match db {
             Ok(db) => Ok(Database {
                 db: UnsafeCell::new(db),
+                observer: Default::default(),
             }),
             Err(_) if callback.1 => Err(Error::BeforeRecoveryFailed),
             Err(error) => Err(error.into()),
@@ -395,6 +418,7 @@ impl Database {
         match db {
             Ok(db) => Ok(Database {
                 db: UnsafeCell::new(db),
+                observer: Default::default(),
             }),
             Err(error) => Err(match callback.2 {
                 Some(RecoveryCallbackFailure::AdmissionFailed) => Error::WalAdmissionFailed,

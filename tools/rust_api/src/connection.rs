@@ -11,6 +11,14 @@ use std::convert::TryInto;
 /// repeated execution
 pub struct PreparedStatement {
     statement: UniquePtr<ffi::PreparedStatement>,
+    text: String,
+}
+
+impl PreparedStatement {
+    /// The query text this statement was prepared from.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
 }
 
 /// Connections are used to interact with a Database instance.
@@ -67,7 +75,11 @@ pub struct Connection<'a> {
     // with (*self.conn.get()).pin_mut()
     // Turning this into a function just causes lifetime issues.
     conn: UnsafeCell<UniquePtr<ffi::Connection<'a>>>,
+    database: &'a Database,
+    id: u64,
 }
+
+static NEXT_CONNECTION_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 // Connections are synchronized on the C++ side and should be safe to move and access across
 // threads
@@ -83,6 +95,8 @@ impl<'a> Connection<'a> {
         let db = unsafe { (*database.db.get()).pin_mut() };
         Ok(Connection {
             conn: UnsafeCell::new(ffi::database_connect(db)?),
+            database,
+            id: NEXT_CONNECTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -112,7 +126,10 @@ impl<'a> Connection<'a> {
         let statement =
             unsafe { (*self.conn.get()).pin_mut() }.prepare(ffi::StringView::new(query))?;
         if statement.isSuccess() {
-            Ok(PreparedStatement { statement })
+            Ok(PreparedStatement {
+                statement,
+                text: query.to_string(),
+            })
         } else {
             Err(Error::FailedPreparedStatement(
                 ffi::prepared_statement_error_message(&statement),
@@ -137,6 +154,7 @@ impl<'a> Connection<'a> {
         let conn = unsafe { (*self.conn.get()).pin_mut() };
         let result = ffi::connection_query(conn, ffi::StringView::new(query))?;
         if result.isSuccess() {
+            self.notify_observer(query, &[])?;
             Ok(QueryResult { result })
         } else {
             Err(Error::FailedQuery(ffi::query_result_get_error_message(
@@ -176,6 +194,12 @@ impl<'a> Connection<'a> {
         // Passing and converting Values in a collection across the ffi boundary is difficult
         // (std::vector cannot be constructed from rust, Vec cannot contain opaque C++ types)
         // So we create an opaque parameter pack and copy the parameters into it one by one
+        let observed: Option<Vec<(String, Value)>> = self.observer().map(|_| {
+            params
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), value.clone()))
+                .collect()
+        });
         let mut cxx_params = ffi::new_params();
         for (key, value) in params {
             let ffi_value: cxx::UniquePtr<ffi::Value> = value.try_into()?;
@@ -185,11 +209,35 @@ impl<'a> Connection<'a> {
         let result =
             ffi::connection_execute(conn, prepared_statement.statement.pin_mut(), cxx_params)?;
         if result.isSuccess() {
+            if let Some(params) = observed {
+                self.notify_observer(&prepared_statement.text, &params)?;
+            }
             Ok(QueryResult { result })
         } else {
             Err(Error::FailedQuery(ffi::query_result_get_error_message(
                 &result,
             )))
+        }
+    }
+
+    /// Process-unique identity of this connection. Unlike its address, it is
+    /// never reused after the connection is dropped, so an observer can key
+    /// per-connection state (for example an open transaction) by it.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn observer(&self) -> Option<std::sync::Arc<dyn crate::StatementObserver>> {
+        if crate::observer::observing() {
+            return None;
+        }
+        self.database.statement_observer()
+    }
+
+    fn notify_observer(&self, statement: &str, params: &[(String, Value)]) -> Result<(), Error> {
+        match self.observer() {
+            Some(observer) => crate::observer::notify(observer.as_ref(), self, statement, params),
+            None => Ok(()),
         }
     }
 
